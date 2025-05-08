@@ -150,8 +150,14 @@ class SLAM_GUI:
         viewpoint_tile.add_child(vp_subtile2)
         self.panel.add_child(viewpoint_tile)
 
-        self.panel.add_child(gui.Label("3D Objects"))
+        object_uncertainty_tile = gui.Horiz(0.5 * em, gui.Margins(margin))
+        ou_subtile1 = gui.Vert(0.5 * em, gui.Margins(margin))
+        ou_subtile2 = gui.Vert(0.5 * em, gui.Margins(margin))
+
+        # 3D Objects section
+        ou_subtile1.add_child(gui.Label("3D Objects"))
         chbox_tile_3dobj = gui.Horiz(0.5 * em, gui.Margins(margin))
+
         self.cameras_chbox = gui.Checkbox("Cameras")
         self.cameras_chbox.checked = True
         self.cameras_chbox.set_on_checked(self._on_cameras_chbox)
@@ -160,12 +166,28 @@ class SLAM_GUI:
         self.kf_window_chbox = gui.Checkbox("Active window")
         self.kf_window_chbox.set_on_checked(self._on_kf_window_chbox)
         chbox_tile_3dobj.add_child(self.kf_window_chbox)
-        self.panel.add_child(chbox_tile_3dobj)
 
         self.axis_chbox = gui.Checkbox("Axis")
         self.axis_chbox.checked = False
         self.axis_chbox.set_on_checked(self._on_axis_chbox)
         chbox_tile_3dobj.add_child(self.axis_chbox)
+
+        ou_subtile1.add_child(chbox_tile_3dobj)
+
+        # Uncertainty section
+        ou_subtile2.add_child(gui.Label("Analysis"))
+        chbox_tile_uncertainty = gui.Horiz(0.5 * em, gui.Margins(margin))
+
+        self.uncertainty_chbox = gui.Checkbox("Uncertainty")
+        self.uncertainty_chbox.checked = False
+        chbox_tile_uncertainty.add_child(self.uncertainty_chbox)
+
+        ou_subtile2.add_child(chbox_tile_uncertainty)
+
+        # Combine both subtile sections
+        object_uncertainty_tile.add_child(ou_subtile1)
+        object_uncertainty_tile.add_child(ou_subtile2)
+        self.panel.add_child(object_uncertainty_tile)
 
         self.panel.add_child(gui.Label("Rendering options"))
         chbox_tile_geometry = gui.Horiz(0.5 * em, gui.Margins(margin))
@@ -571,6 +593,50 @@ class SLAM_GUI:
         return rendering_data
 
     def render_o3d_image(self, results, current_cam):
+        if self.uncertainty_chbox.checked:
+            # Choose a Gaussian index
+            i = 0
+
+            # Get position and scale from Gaussian
+            pos = self.gaussian_cur.get_xyz[i].cpu().numpy()         # (3,)
+            scale = self.gaussian_cur.get_scaling[i].cpu().numpy()   # (3,)
+
+            # Create a sphere (which we’ll scale into an ellipsoid)
+            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
+            sphere.compute_vertex_normals()
+            sphere.paint_uniform_color([1.0, 0.0, 0.0])  # Red
+
+            # Build a transformation matrix to apply scale and position
+            transform = np.eye(4)
+            transform[0, 0] = scale[0]
+            transform[1, 1] = scale[1]
+            transform[2, 2] = scale[2]
+            transform[:3, 3] = pos  # translation
+
+            # Apply the transformation
+            sphere.transform(transform)
+
+            # Set material
+            material = o3d.visualization.rendering.MaterialRecord()
+            material.shader = "defaultLit"
+
+            # Add to scene
+            self.widget3d.scene.add_geometry("uncertainty_sphere", sphere, material)
+
+            # Return RGB image for rendering
+            rgb = (
+                (torch.clamp(results["render"], min=0, max=1.0) * 255)
+                .byte()
+                .permute(1, 2, 0)
+                .contiguous()
+                .cpu()
+                .numpy()
+            )
+            render_img = o3d.geometry.Image(rgb)
+            
+        elif self.uncertainty_chbox.checked == False:
+            self.widget3d.scene.remove_geometry("uncertainty_sphere")
+
         if self.depth_chbox.checked:
             depth = results["depth"]
             depth = depth[0, :, :].detach().cpu().numpy()
