@@ -23,7 +23,7 @@ from utils.slam_frontend import FrontEnd
 
 
 class SLAM:
-    def __init__(self, config, save_dir=None):
+    def __init__(self, config, save_dir=None, uncertainty_mode=False, patch_size=8, top_k=15000):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
 
@@ -89,6 +89,10 @@ class SLAM:
         self.backend.frontend_queue = frontend_queue
         self.backend.backend_queue = backend_queue
         self.backend.live_mode = self.live_mode
+
+        self.backend.uncertainty = uncertainty_mode
+        self.backend.patch_size = patch_size
+        self.backend.top_k = top_k
 
         self.backend.set_hyperparams()
 
@@ -203,6 +207,9 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument("--config", type=str)
     parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--uncertainty_mode", action="store_true", help="Enable uncertainty rendering")
+    parser.add_argument("--patch_size", type=int, default=8, help="Square patch size (pixels) used for uncertainty pooling")
+    parser.add_argument("--top_k", type=int, default=15000, help="Number of highest-score patches kept for gradient back-prop")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -249,7 +256,13 @@ if __name__ == "__main__":
         wandb.define_metric("frame_idx")
         wandb.define_metric("ate*", step_metric="frame_idx")
 
-    slam = SLAM(config, save_dir=save_dir)
+    slam = SLAM(
+        config,
+        save_dir=save_dir,
+        uncertainty_mode=args.uncertainty_mode,
+        patch_size=args.patch_size,
+        top_k=args.top_k,
+    )
 
     slam.run()
     wandb.finish()

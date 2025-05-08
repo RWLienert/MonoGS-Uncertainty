@@ -10,6 +10,7 @@
 #
 
 import os
+from typing import Dict
 
 import numpy as np
 import open3d as o3d
@@ -30,6 +31,17 @@ from gaussian_splatting.utils.graphics_utils import BasicPointCloud, getWorld2Vi
 from gaussian_splatting.utils.sh_utils import RGB2SH
 from gaussian_splatting.utils.system_utils import mkdir_p
 
+# ───────── Fisher-EMA Global Configuration ───────── #
+#   Specifies (epsilon, initial variance ceiling) for each parameter type
+FISHER_CFG = {
+    "xyz":      (1e-4, 1e2),
+    "scaling":  (1e-4, 1e2),
+    "rotation": (1e-4, 1e2),
+    "f_dc":     (1e-4, 5e2),
+    "opacity":  (1e-5, 30.0),
+    "f_rest":   (5e-6, 8000.0),
+}
+DEFAULT_EPS, DEFAULT_CEIL = 1e-4, 1e2
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -49,6 +61,15 @@ class GaussianModel:
         self.n_obs = torch.empty(0).int()
 
         self.optimizer = None
+
+        # Covariance and Fisher information buffers
+        self._xyz_cov = self._scaling_cov = self._rotation_cov = torch.empty(0)
+        self._features_dc_cov = self._features_rest_cov = torch.empty(0)
+        self._opacity_cov = torch.empty(0)
+
+        self._xyz_fisher_buf = self._scaling_fisher_buf = self._rotation_fisher_buf = torch.empty(0)
+        self._f_dc_fisher_buf = self._f_rest_fisher_buf = torch.empty(0)
+        self._opacity_fisher_buf = torch.empty(0)
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -103,6 +124,80 @@ class GaussianModel:
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
+    
+    @torch.no_grad()
+    def update_covariance(self,
+                          grads_dict: Dict[str, torch.Tensor], *,
+                          cur_iter: int,
+                          max_iter: int,
+                          loss_scalar: float | None = None,
+                          var_floor: float = 1e-6,
+                          max_pts_per_group: int = 300_000):
+
+        """
+        Update diagonal covariance via Fisher-EMA using parameter gradients.
+        Skips update if loss change <2% to save computation.
+        """
+        # Skip if loss change is too small
+        if loss_scalar is not None and hasattr(self, '_prev_loss_scalar'):
+            if abs(loss_scalar - self._prev_loss_scalar) < 0.02 * self._prev_loss_scalar:
+                return
+        if loss_scalar is not None:
+            self._prev_loss_scalar = loss_scalar
+
+        # Compute dynamic alpha from training progress
+        prog = cur_iter / max_iter
+        alpha_dyn = 0.9 * (1.0 - 0.5 * prog)
+        if cur_iter % 2000 == 0:
+            logging.info(f"[Fisher-EMA] iteration {cur_iter}: alpha={alpha_dyn:.3f}")
+
+        # Update each parameter group
+        for pname, grad in grads_dict.items():
+            if grad is None or grad.numel() == 0:
+                continue
+            eps, var_ceil0 = FISHER_CFG.get(pname, (DEFAULT_EPS, DEFAULT_CEIL))
+            var_ceil_dyn = max(var_floor * 10.0, var_ceil0 * (1.0 - 0.5 * prog))
+
+            N, D = grad.shape
+            buf_name = {
+                'xyz':      '_xyz_fisher_buf',
+                'scaling':  '_scaling_fisher_buf',
+                'rotation': '_rotation_fisher_buf',
+                'opacity':  '_opacity_fisher_buf',
+                'f_dc':     '_f_dc_fisher_buf',
+                'f_rest':   '_f_rest_fisher_buf',
+            }[pname]
+
+            fisher_buf = getattr(self, buf_name)
+            if fisher_buf.numel() == 0:
+                fisher_buf = torch.zeros_like(grad)
+
+            # Block-wise EMA update for memory efficiency
+            for s in range(0, N, max_pts_per_group):
+                e = min(s + max_pts_per_group, N)
+                chunk = fisher_buf[s:e]
+                g2 = grad[s:e].square()
+                chunk.mul_(alpha_dyn).add_(g2, alpha=1.0 - alpha_dyn)
+            setattr(self, buf_name, fisher_buf)
+
+            # Fisher → Σ
+            var = torch.reciprocal(fisher_buf + eps)
+            var.clamp_(var_floor, var_ceil_dyn)
+
+            cov_name = {
+                "xyz":      "_xyz_cov",
+                "scaling":  "_scaling_cov",
+                "rotation": "_rotation_cov",
+                "opacity":  "_opacity_cov",
+                "f_dc":     "_features_dc_cov",
+                "f_rest":   "_features_rest_cov",
+            }[pname]
+
+            if pname in ("f_rest", "opacity"):            # 向量
+                setattr(self, cov_name, var)
+            else:                                         # 对角矩阵
+                eye = torch.eye(D, device=var.device).unsqueeze(0)
+                setattr(self, cov_name, var.unsqueeze(-1) * eye)
 
     def create_pcd_from_image(self, cam_info, init=False, scale=2.0, depthmap=None):
         cam = cam_info
@@ -199,6 +294,18 @@ class GaussianModel:
                 (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
             )
         )
+
+        # Fisher buffers:
+        self._xyz_fisher_buf = torch.zeros((N,3), device="cuda")  # Nx3
+        self._f_dc_fisher_buf = torch.zeros((N,3), device="cuda")
+        self._scaling_fisher_buf = torch.zeros((N,3), device="cuda")
+        self._rotation_fisher_buf= torch.zeros((N,4), device="cuda")
+        self._opacity_fisher_buf = torch.zeros((N,1), device="cuda")
+        # f_rest => Nx45:
+        C = self._features_rest.shape[1]  # 15
+        D_ = self._features_rest.shape[2] # 3
+        D_total = C*D_
+        self._f_rest_fisher_buf = torch.zeros((N,D_total), device="cuda")
 
         return fused_point_cloud, features, scales, rots, opacities
 
@@ -513,6 +620,25 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
+        oldN = self._xyz_cov.shape[0]
+        newN = valid_points_mask.sum().item()
+        if newN < oldN:
+            # --- 1) Cov Clip ---
+            self._xyz_cov          = self._xyz_cov[valid_points_mask]
+            self._opacity_cov      = self._opacity_cov[valid_points_mask]
+            self._scaling_cov      = self._scaling_cov[valid_points_mask]
+            self._rotation_cov     = self._rotation_cov[valid_points_mask]
+            self._features_dc_cov  = self._features_dc_cov[valid_points_mask]
+            self._features_rest_cov= self._features_rest_cov[valid_points_mask]
+
+            # --- 2) Fisher buf Clip ---
+            self._xyz_fisher_buf      = self._xyz_fisher_buf[valid_points_mask]
+            self._opacity_fisher_buf  = self._opacity_fisher_buf[valid_points_mask]
+            self._scaling_fisher_buf  = self._scaling_fisher_buf[valid_points_mask]
+            self._rotation_fisher_buf = self._rotation_fisher_buf[valid_points_mask]
+            self._f_dc_fisher_buf     = self._f_dc_fisher_buf[valid_points_mask]
+            self._f_rest_fisher_buf   = self._f_rest_fisher_buf[valid_points_mask]
+
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
@@ -554,6 +680,51 @@ class GaussianModel:
 
         return optimizable_tensors
 
+    def cat_covariances(self, xyz_count, new_count):
+        """
+        为 cov + fisher_buf 同步扩展, 给新点赋予一定的初始 cov (这里简单给 0.1).
+        同时也给 fisher_buf 扩展 0.0.
+        """
+        device = self._xyz_cov.device
+        # ----- Cov expansions -----
+        new_xyz_cov = 0.1 * torch.eye(3, device=device).unsqueeze(0).repeat(new_count,1,1)
+        self._xyz_cov = torch.cat((self._xyz_cov, new_xyz_cov), dim=0)
+
+        new_fdc_cov = 0.1*torch.eye(3, device=device).unsqueeze(0).repeat(new_count,1,1)
+        self._features_dc_cov = torch.cat((self._features_dc_cov, new_fdc_cov), dim=0)
+
+        D_ = self._features_rest_cov.shape[1]
+        new_frest_cov = 0.1*torch.ones((new_count, D_), device=device)
+        self._features_rest_cov = torch.cat((self._features_rest_cov, new_frest_cov), dim=0)
+
+        new_scaling_cov = 0.1*torch.eye(3, device=device).unsqueeze(0).repeat(new_count,1,1)
+        self._scaling_cov = torch.cat((self._scaling_cov, new_scaling_cov), dim=0)
+
+        new_rotation_cov = 0.1*torch.eye(4, device=device).unsqueeze(0).repeat(new_count,1,1)
+        self._rotation_cov = torch.cat((self._rotation_cov, new_rotation_cov), dim=0)
+
+        new_opacity_cov = 0.1*torch.ones((new_count,1), device=device)
+        self._opacity_cov = torch.cat((self._opacity_cov, new_opacity_cov), dim=0)
+
+        # ----- Fisher buf expansions -----
+        new_xyz_fish   = torch.zeros((new_count, 3), device=device)
+        self._xyz_fisher_buf = torch.cat((self._xyz_fisher_buf, new_xyz_fish), dim=0)
+
+        new_fdc_fish   = torch.zeros((new_count, 3), device=device)
+        self._f_dc_fisher_buf = torch.cat((self._f_dc_fisher_buf, new_fdc_fish), dim=0)
+
+        new_frest_fish = torch.zeros((new_count, D_), device=device)
+        self._f_rest_fisher_buf = torch.cat((self._f_rest_fisher_buf, new_frest_fish), dim=0)
+
+        new_scaling_fish = torch.zeros((new_count,3), device=device)
+        self._scaling_fisher_buf = torch.cat((self._scaling_fisher_buf, new_scaling_fish), dim=0)
+
+        new_rotation_fish = torch.zeros((new_count,4), device=device)
+        self._rotation_fisher_buf = torch.cat((self._rotation_fisher_buf, new_rotation_fish), dim=0)
+
+        new_opacity_fish = torch.zeros((new_count,1), device=device)
+        self._opacity_fisher_buf = torch.cat((self._opacity_fisher_buf, new_opacity_fish), dim=0)
+
     def densification_postfix(
         self,
         new_xyz,
@@ -573,6 +744,8 @@ class GaussianModel:
             "scaling": new_scaling,
             "rotation": new_rotation,
         }
+        old_count = self.get_xyz.shape[0]
+        new_count = new_xyz.shape[0]
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -640,6 +813,10 @@ class GaussianModel:
 
         self.prune_points(prune_filter)
 
+        with torch.no_grad():
+            self._xyz.data.clamp_(-1e5,1e5)
+            self._scaling.data.clamp_(-10,10)
+
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(
@@ -670,6 +847,9 @@ class GaussianModel:
             new_kf_ids=new_kf_id,
             new_n_obs=new_n_obs,
         )
+        with torch.no_grad():
+            self._xyz.data.clamp_(-1e5,1e5)
+            self._scaling.data.clamp_(-10,10)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
@@ -687,9 +867,50 @@ class GaussianModel:
                 torch.logical_or(prune_mask, big_points_vs), big_points_ws
             )
         self.prune_points(prune_mask)
+        with torch.no_grad():
+            self._xyz.data.clamp_(-1e5,1e5)
+            self._scaling.data.clamp_(-10,10)
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(
             viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[update_filter] += 1
+        with torch.no_grad():
+            self._xyz.data.clamp_(-1e5,1e5)
+            self._scaling.data.clamp_(-10,10)
+    
+    @property
+    def get_parameters(self):
+        tlist = []
+        for t_ in [
+            self._xyz,self._features_dc,self._features_rest,
+            self._scaling,self._rotation,self._opacity
+        ]:
+            if t_.numel()>0:
+                t_leaf = t_.detach().clone().requires_grad_(True)
+                tlist.append(t_leaf.reshape(-1))
+        return torch.cat(tlist) if tlist else torch.tensor([],requires_grad=True)
+
+    @property
+    def get_param_covariance(self):
+        cov_list=[]
+        # xyz_cov => [N,3,3] => diagonal => [N,3]
+        # ...
+        if self._xyz_cov.numel()>0:
+            cov_list.append(self._xyz_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
+        if self._opacity_cov.numel()>0:
+            cov_list.append(self._opacity_cov.reshape(-1))
+        if self._scaling_cov.numel()>0:
+            cov_list.append(self._scaling_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
+        if self._rotation_cov.numel()>0:
+            cov_list.append(self._rotation_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
+        if self._features_dc_cov.numel()>0:
+            cov_list.append(self._features_dc_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
+        if self._features_rest_cov.numel()>0:
+            cov_list.append(self._features_rest_cov.reshape(-1))
+
+        if cov_list:
+            return torch.cat(cov_list)
+        else:
+            return torch.tensor([], requires_grad=True)
