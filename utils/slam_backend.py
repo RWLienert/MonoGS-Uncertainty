@@ -259,6 +259,39 @@ class BackEnd(mp.Process):
             loss_mapping += 10 * isotropic_loss.mean()
             loss_mapping.backward()
             gaussian_split = False
+
+            # 1. Collect gradients and update Fisher covariance
+            grads_dict = {}
+            for g in gaussians.optimizer.param_groups:
+                pname = g["name"]
+                flat_list = []
+                for p in g["params"]:
+                    if p.grad is not None:
+                        flat_list.append(p.grad.reshape(p.grad.shape[0], -1))
+                if flat_list:
+                    grads_dict[pname] = torch.cat(flat_list, dim=1).detach()
+            # Boost gradient for f_rest
+            if "f_rest" in grads_dict:
+                grads_dict["f_rest"] *= 5.0
+            grad_boost = dict(
+                xyz      = 200.0,
+                scaling  = 40.0,
+                rotation = 40.0,
+                opacity  = 500.0,
+                f_dc     = 3000.0,
+                f_rest   = 500.0
+            )
+            for name, g in grads_dict.items():
+                grads_dict[name] = g * grad_boost.get(name, 1.0)
+
+            # Update covariance with single Fisher step
+            gaussians.update_covariance(
+                grads_dict,
+                cur_iter   = iteration,
+                max_iter   = opt.iterations,
+                loss_scalar= loss.item()
+            )
+
             ## Deinsifying / Pruning Gaussians
             with torch.no_grad():
                 self.occ_aware_visibility = {}
