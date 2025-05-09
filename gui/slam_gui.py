@@ -601,27 +601,30 @@ class SLAM_GUI:
             pos = self.gaussian_cur.get_xyz[i].cpu().numpy()         # (3,)
             scale = self.gaussian_cur.get_scaling[i].cpu().numpy()   # (3,)
 
-            # Create a sphere (which we’ll scale into an ellipsoid)
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
-            sphere.compute_vertex_normals()
-            sphere.paint_uniform_color([1.0, 0.0, 0.0])  # Red
+            # Create a largest error sphere
+            largest_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
+            largest_error_sphere.compute_vertex_normals()
+            largest_error_sphere.paint_uniform_color([1.0, 0.0, 0.0])  # Red
 
-            # Build a transformation matrix to apply scale and position
             transform = np.eye(4)
             transform[0, 0] = scale[0]
             transform[1, 1] = scale[1]
             transform[2, 2] = scale[2]
-            transform[:3, 3] = pos  # translation
+            transform[:3, 3] = pos
+            largest_error_sphere.transform(transform)
 
-            # Apply the transformation
-            sphere.transform(transform)
+            # Create a compass sphere
+            compass_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.2)
+            compass_sphere.compute_vertex_normals()
+            compass_sphere.paint_uniform_color([0.0, 1.0, 0.0])  # Green
 
             # Set material
             material = o3d.visualization.rendering.MaterialRecord()
             material.shader = "defaultLit"
 
             # Add to scene
-            self.widget3d.scene.add_geometry("uncertainty_sphere", sphere, material)
+            self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material)
+            self.widget3d.scene.add_geometry("compass_sphere", compass_sphere, material)
 
             # Return RGB image for rendering
             rgb = (
