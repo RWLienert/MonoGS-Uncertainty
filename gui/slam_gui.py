@@ -6,6 +6,7 @@ from datetime import datetime
 import cv2
 import glfw
 import imgviz
+import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 import open3d.visualization.gui as gui
@@ -50,6 +51,8 @@ class SLAM_GUI:
         self.init = False
         self.kf_window = None
         self.render_img = None
+
+        self.oldPos = None
 
         if params_gui is not None:
             self.background = params_gui.background
@@ -594,12 +597,13 @@ class SLAM_GUI:
 
     def render_o3d_image(self, results, current_cam):
         if self.uncertainty_chbox.checked:
+        
             # Choose a Gaussian index
             i = 0
 
             # Get position and scale from Gaussian
-            pos = self.gaussian_cur.get_xyz[i].cpu().numpy()         # (3,)
-            scale = self.gaussian_cur.get_scaling[i].cpu().numpy()   # (3,)
+            pos = self.gaussian_cur.get_xyz[i].cpu().numpy()
+            scale = self.gaussian_cur.get_scaling[i].cpu().numpy() * 1.5
 
             # Create a largest error sphere
             largest_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
@@ -614,17 +618,71 @@ class SLAM_GUI:
             largest_error_sphere.transform(transform)
 
             # Create a compass sphere
-            compass_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.2)
+            compass_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.07)
             compass_sphere.compute_vertex_normals()
-            compass_sphere.paint_uniform_color([0.0, 1.0, 0.0])  # Green
+
+            # Get camera's world position
+            camera_position = current_cam.camera_center.cpu().numpy()  # (3,)
+
+            # Extract camera axes from the world view matrix
+            # Camera's right = X-axis, up = Y-axis, forward = -Z-axis
+            cam_matrix = current_cam.world_view_transform[:3, :3].cpu().numpy()
+            right_dir = cam_matrix[:, 0]   # X axis
+            up_dir    = cam_matrix[:, 1]   # Y axis
+            forward_dir = -cam_matrix[:, 2]  # Z axis (negated to get forward)
+
+            # Define offsets in camera-local space (units)
+            offset_forward = -1.0
+            offset_right = 0.5
+            offset_up = -0.4
+
+            # Combine offsets to compute world-space position
+            sphere_position = (
+                camera_position +
+                right_dir * offset_right +
+                up_dir * offset_up +
+                forward_dir * offset_forward
+            )
+
+            # Apply transformation
+            T = np.eye(4)
+            T[:3, 3] = sphere_position
+            compass_sphere.transform(T)
+
+            # Direction from camera to error
+            direction_to_error = pos - camera_position
+            direction_to_error = direction_to_error / np.linalg.norm(direction_to_error)
+
+            # Per-vertex directional coloring (red only in the direction of the error)
+            vertices = np.asarray(compass_sphere.vertices)
+            normals = np.asarray(compass_sphere.vertex_normals)
+            
+            colours = []
+            for normal in normals:
+                # Compute how much this point faces *away* from the error direction
+                alignment = np.dot(normal, -direction_to_error)  # [-1, 1]
+                alignment = np.clip(alignment, 0.0, 1.0)
+
+                # Interpolate color: mostly green (0,1,0), but red (1,0,0) where alignment ~ 1
+                red   = alignment
+                green = 1.0 - alignment
+                colour = [red, green, 0.0]
+
+                colours.append(colour)
+
+            compass_sphere.vertex_colors = o3d.utility.Vector3dVector(np.array(colours))
 
             # Set material
-            material = o3d.visualization.rendering.MaterialRecord()
-            material.shader = "defaultLit"
+            material1 = o3d.visualization.rendering.MaterialRecord()
+            material1.shader = "defaultLit"
+
+            if self.oldPos is None or not np.allclose(self.oldPos, camera_position):
+                self.oldPos = camera_position
+                self.widget3d.scene.remove_geometry("compass_sphere")
 
             # Add to scene
-            self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material)
-            self.widget3d.scene.add_geometry("compass_sphere", compass_sphere, material)
+            self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material1)
+            self.widget3d.scene.add_geometry("compass_sphere", compass_sphere, material1)
 
             # Return RGB image for rendering
             rgb = (
@@ -639,6 +697,7 @@ class SLAM_GUI:
             
         elif self.uncertainty_chbox.checked == False:
             self.widget3d.scene.remove_geometry("uncertainty_sphere")
+            self.widget3d.scene.remove_geometry("compass_sphere")
 
         if self.depth_chbox.checked:
             depth = results["depth"]
