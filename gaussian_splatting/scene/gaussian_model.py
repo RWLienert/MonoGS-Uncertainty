@@ -9,12 +9,12 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import os
-from typing import Dict
+import os, logging
+from typing import Dict, Optional
 
 import numpy as np
 import open3d as o3d
-import torch
+import torch, torch.nn.functional as F
 from plyfile import PlyData, PlyElement
 from simple_knn._C import distCUDA2
 from torch import nn
@@ -85,7 +85,7 @@ class GaussianModel:
         self.ply_input = None
 
         self.isotropic = False
-
+    
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
     ):
@@ -111,6 +111,14 @@ class GaussianModel:
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
+    
+    @property
+    def get_features_dc(self):
+        return self._features_dc
+
+    @property
+    def get_features_rest(self):
+        return self._features_rest
 
     @property
     def get_opacity(self):
@@ -130,7 +138,7 @@ class GaussianModel:
                           grads_dict: Dict[str, torch.Tensor], *,
                           cur_iter: int,
                           max_iter: int,
-                          loss_scalar: float | None = None,
+                          loss_scalar: Optional[float] = None,
                           var_floor: float = 1e-6,
                           max_pts_per_group: int = 300_000):
 
@@ -193,9 +201,9 @@ class GaussianModel:
                 "f_rest":   "_features_rest_cov",
             }[pname]
 
-            if pname in ("f_rest", "opacity"):            # 向量
+            if pname in ("f_rest", "opacity"):
                 setattr(self, cov_name, var)
-            else:                                         # 对角矩阵
+            else:
                 eye = torch.eye(D, device=var.device).unsqueeze(0)
                 setattr(self, cov_name, var.unsqueeze(-1) * eye)
 
@@ -295,17 +303,39 @@ class GaussianModel:
             )
         )
 
-        # Fisher buffers:
-        self._xyz_fisher_buf = torch.zeros((N,3), device="cuda")  # Nx3
-        self._f_dc_fisher_buf = torch.zeros((N,3), device="cuda")
-        self._scaling_fisher_buf = torch.zeros((N,3), device="cuda")
-        self._rotation_fisher_buf= torch.zeros((N,4), device="cuda")
-        self._opacity_fisher_buf = torch.zeros((N,1), device="cuda")
-        # f_rest => Nx45:
-        C = self._features_rest.shape[1]  # 15
-        D_ = self._features_rest.shape[2] # 3
-        D_total = C*D_
-        self._f_rest_fisher_buf = torch.zeros((N,D_total), device="cuda")
+        N = fused_point_cloud.shape[0]
+
+        self._xyz_cov = (
+            dist2[:, None, None] * torch.eye(3, device="cuda")[None, :, :]
+        ).detach()
+
+        color_var = torch.var(fused_color, dim=0, keepdim=True)
+        self._features_dc_cov = (
+            color_var * torch.eye(3, device="cuda")[None, :, :]
+        ).expand(N, 3, 3).detach()
+
+        C = features[:, :, 1:].shape[1]  # Should be 3 (channels)
+        D_ = features[:, :, 1:].shape[2]  # SH Coeff count (excluding DC term)
+        D_total = C * D_
+        self._features_rest_cov = torch.full((N, D_total), 0.1, device="cuda").detach()
+
+        self._scaling_cov = (
+            dist2[:, None, None] * 0.1 * torch.eye(3, device="cuda")[None, :, :]
+        ).detach()
+
+        self._rotation_cov = (
+            0.1 * torch.eye(4, device="cuda")[None, :, :].repeat(N, 1, 1)
+        ).detach()
+
+        op_var = torch.var(opacities, dim=0, keepdim=True)
+        self._opacity_cov = (op_var * 0.1 * torch.ones_like(opacities)).detach()
+
+        self._xyz_fisher_buf = torch.zeros((N, 3), device="cuda")
+        self._f_dc_fisher_buf = torch.zeros((N, 3), device="cuda")
+        self._scaling_fisher_buf = torch.zeros((N, 3), device="cuda")
+        self._rotation_fisher_buf = torch.zeros((N, 4), device="cuda")
+        self._opacity_fisher_buf = torch.zeros((N, 1), device="cuda")
+        self._f_rest_fisher_buf = torch.zeros((N, D_total), device="cuda")
 
         return fused_point_cloud, features, scales, rots, opacities
 
@@ -415,6 +445,16 @@ class GaussianModel:
 
                 param_group["lr"] = lr
                 return lr
+    
+    def get_covariance_dict(self, batch_size=5000):
+        return {
+            "xyz":      self._xyz_cov,
+            "opacity":  self._opacity_cov,
+            "scaling":  self._scaling_cov,
+            "rotation": self._rotation_cov,
+            "f_dc":     self._features_dc_cov,
+            "f_rest":   self._features_rest_cov
+        }
 
     def construct_list_of_attributes(self):
         l = ["x", "y", "z", "nx", "ny", "nz"]
@@ -481,97 +521,6 @@ class GaussianModel:
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    def load_ply(self, path):
-        plydata = PlyData.read(path)
-
-        def fetchPly_nocolor(path):
-            plydata = PlyData.read(path)
-            vertices = plydata["vertex"]
-            positions = np.vstack([vertices["x"], vertices["y"], vertices["z"]]).T
-            normals = np.vstack([vertices["nx"], vertices["ny"], vertices["nz"]]).T
-            colors = np.ones_like(positions)
-            return BasicPointCloud(points=positions, colors=colors, normals=normals)
-
-        self.ply_input = fetchPly_nocolor(path)
-        xyz = np.stack(
-            (
-                np.asarray(plydata.elements[0]["x"]),
-                np.asarray(plydata.elements[0]["y"]),
-                np.asarray(plydata.elements[0]["z"]),
-            ),
-            axis=1,
-        )
-        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
-
-        features_dc = np.zeros((xyz.shape[0], 3, 1))
-        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
-        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
-
-        extra_f_names = [
-            p.name
-            for p in plydata.elements[0].properties
-            if p.name.startswith("f_rest_")
-        ]
-        extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
-        assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
-        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-        for idx, attr_name in enumerate(extra_f_names):
-            features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-        features_extra = features_extra.reshape(
-            (features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1)
-        )
-
-        scale_names = [
-            p.name
-            for p in plydata.elements[0].properties
-            if p.name.startswith("scale_")
-        ]
-        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
-        scales = np.zeros((xyz.shape[0], len(scale_names)))
-        for idx, attr_name in enumerate(scale_names):
-            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-        rot_names = [
-            p.name for p in plydata.elements[0].properties if p.name.startswith("rot")
-        ]
-        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
-        rots = np.zeros((xyz.shape[0], len(rot_names)))
-        for idx, attr_name in enumerate(rot_names):
-            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-        self._xyz = nn.Parameter(
-            torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True)
-        )
-        self._features_dc = nn.Parameter(
-            torch.tensor(features_dc, dtype=torch.float, device="cuda")
-            .transpose(1, 2)
-            .contiguous()
-            .requires_grad_(True)
-        )
-        self._features_rest = nn.Parameter(
-            torch.tensor(features_extra, dtype=torch.float, device="cuda")
-            .transpose(1, 2)
-            .contiguous()
-            .requires_grad_(True)
-        )
-        self._opacity = nn.Parameter(
-            torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(
-                True
-            )
-        )
-        self._scaling = nn.Parameter(
-            torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True)
-        )
-        self._rotation = nn.Parameter(
-            torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True)
-        )
-        self.active_sh_degree = self.max_sh_degree
-        self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
-        self.unique_kfIDs = torch.zeros((self._xyz.shape[0]))
-        self.n_obs = torch.zeros((self._xyz.shape[0]), device="cpu").int()
-
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -610,6 +559,11 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
+        n_points = self._xyz.shape[0]
+        if mask.shape[0] != n_points:
+            logging.warning(f"[prune_points] shape mismatch: param pts={n_points}, mask={mask.shape[0]}")
+            mask = mask[:n_points]
+            
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -681,10 +635,8 @@ class GaussianModel:
         return optimizable_tensors
 
     def cat_covariances(self, xyz_count, new_count):
-        """
-        为 cov + fisher_buf 同步扩展, 给新点赋予一定的初始 cov (这里简单给 0.1).
-        同时也给 fisher_buf 扩展 0.0.
-        """
+        #cov + fisher_buf
+        
         device = self._xyz_cov.device
         # ----- Cov expansions -----
         new_xyz_cov = 0.1 * torch.eye(3, device=device).unsqueeze(0).repeat(new_count,1,1)
@@ -748,12 +700,16 @@ class GaussianModel:
         new_count = new_xyz.shape[0]
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
+
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+
+        # 2) Update covariance
+        self.cat_covariances(old_count, new_count)
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -762,12 +718,19 @@ class GaussianModel:
             self.unique_kfIDs = torch.cat((self.unique_kfIDs, new_kf_ids)).int()
         if new_n_obs is not None:
             self.n_obs = torch.cat((self.n_obs, new_n_obs)).int()
+        
+        # clamp
+        with torch.no_grad():
+            self._xyz.data.clamp_(-1e5,1e5)
+            self._scaling.data.clamp_(-10,10)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
-        padded_grad[: grads.shape[0]] = grads.squeeze()
+        if grads.numel()>0:
+            padded_grad[:grads.shape[0]] = grads.squeeze()
+
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
@@ -819,13 +782,13 @@ class GaussianModel:
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(
-            torch.norm(grads, dim=-1) >= grad_threshold, True, False
-        )
+        n_init_points = self.get_xyz.shape[0]
+        selected_pts_mask = torch.zeros(n_init_points,dtype=torch.bool, device="cuda")
+        if grads.numel()>0:
+            selected_pts_mask = (torch.norm(grads,dim=-1)>=grad_threshold)
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
-            torch.max(self.get_scaling, dim=1).values
-            <= self.percent_dense * scene_extent,
+            torch.max(self.get_scaling,dim=1).values<=self.percent_dense*scene_extent
         )
 
         new_xyz = self._xyz[selected_pts_mask]
@@ -879,38 +842,3 @@ class GaussianModel:
         with torch.no_grad():
             self._xyz.data.clamp_(-1e5,1e5)
             self._scaling.data.clamp_(-10,10)
-    
-    @property
-    def get_parameters(self):
-        tlist = []
-        for t_ in [
-            self._xyz,self._features_dc,self._features_rest,
-            self._scaling,self._rotation,self._opacity
-        ]:
-            if t_.numel()>0:
-                t_leaf = t_.detach().clone().requires_grad_(True)
-                tlist.append(t_leaf.reshape(-1))
-        return torch.cat(tlist) if tlist else torch.tensor([],requires_grad=True)
-
-    @property
-    def get_param_covariance(self):
-        cov_list=[]
-        # xyz_cov => [N,3,3] => diagonal => [N,3]
-        # ...
-        if self._xyz_cov.numel()>0:
-            cov_list.append(self._xyz_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
-        if self._opacity_cov.numel()>0:
-            cov_list.append(self._opacity_cov.reshape(-1))
-        if self._scaling_cov.numel()>0:
-            cov_list.append(self._scaling_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
-        if self._rotation_cov.numel()>0:
-            cov_list.append(self._rotation_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
-        if self._features_dc_cov.numel()>0:
-            cov_list.append(self._features_dc_cov.diagonal(dim1=-2,dim2=-1).reshape(-1))
-        if self._features_rest_cov.numel()>0:
-            cov_list.append(self._features_rest_cov.reshape(-1))
-
-        if cov_list:
-            return torch.cat(cov_list)
-        else:
-            return torch.tensor([], requires_grad=True)

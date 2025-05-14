@@ -10,8 +10,10 @@
 #
 
 import math
+from typing import Optional
 
 import torch, torch.nn.functional as F
+import numpy as np
 import matplotlib.cm as cm
 
 from diff_gaussian_rasterization import (
@@ -27,7 +29,7 @@ DEBUG             = False          # master print switch
 USE_FISHER_SIGMA  = True           # enable Fisher sigma usage
 K_COLOR           = 8.0            # color weight for Fisher Sigma
 # Fisher Sigma clipping upper bound; None disables clipping
-MAX_CLIP: float | None = 30.0
+MAX_CLIP: Optional[float] = 30.0
 # -------------------------------------------------------
 VERBOSE_RENDER_STATS = True        # enable verbose render stats
 _first_verbose_call  = True        # internal guard for one-time banner
@@ -234,17 +236,6 @@ def get_params_for_grad(pc: GaussianModel, requires_grad: bool = True):
     """
     Collect differentiable parameters for use in gradient rendering.
     """
-
-    features = pc.get_features  # shape: [N, 3 * (degree + 1)^2]
-    num_SH_terms = (pc.max_sh_degree + 1) ** 2  # e.g., 16 for degree=3
-
-    # Reshape to separate channels: [N, 3, num_SH_terms]
-    features_reshaped = features.view(-1, 3, num_SH_terms)
-
-    # Split
-    f_dc   = features_reshaped[:, :, 0]             # shape: [N, 3]
-    f_rest = features_reshaped[:, :, 1:]            # shape: [N, 3, num_SH_terms - 1]
-
     return dict(
         xyz           = pc.get_xyz.clone().detach().requires_grad_(requires_grad),
         opacity       = pc.get_opacity.clone().detach().requires_grad_(requires_grad),
@@ -340,9 +331,10 @@ def project_xyz_to_pixels(xyz: torch.Tensor,
 # =========================================================
 def render_with_grad(
     viewpoint_camera,
+    xyz, opacity, scaling, rotation, features_dc, features_rest, *,
     pc: GaussianModel,
     pipe,
-    bg_color: torch.Tensor,
+    bg_color,
     scaling_modifier=1.0,
     override_color=None,
     mask=None,
@@ -366,7 +358,6 @@ def render_with_grad(
             pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
         )
     )
-    screenspace_points.retain_grad()  # Keep the gradient for further use
 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
@@ -430,8 +421,8 @@ def render_with_grad(
     # Perform the rasterization with the option for masking
     if mask is not None:
         rendered_image, radii, depth, opacity = rasterizer(
-            means3D=means3D[mask],
-            means2D=means2D[mask],
+            xyz[mask],
+            screenspace_points[mask],
             shs=shs[mask],
             colors_precomp=colors_precomp[mask] if colors_precomp is not None else None,
             opacities=opacity[mask],
@@ -443,8 +434,8 @@ def render_with_grad(
         )
     else:
         rendered_image, radii, depth, opacity, n_touched = rasterizer(
-            means3D=means3D,
-            means2D=means2D,
+            xyz,
+            screenspace_points,
             shs=shs,
             colors_precomp=colors_precomp,
             opacities=opacity,
@@ -460,7 +451,7 @@ def render_with_grad(
 
     # Return all necessary values including gradients
     return {
-        "render": rendered_image,
+        "render": rendered_image.clamp(0, 1),
         "viewspace_points": screenspace_points,
         "visibility_filter": visibility_filter,
         "radii": radii,
@@ -482,7 +473,7 @@ def estimate_uncertainty(viewpoint_camera,
                          return_raw   : bool = False,
                          patch_size   : int = 4,
                          K_COLOR      : float = 5.0,
-                         cov_flat_dict: dict | None = None,
+                         cov_flat_dict: Optional[dict] = None,
                          top_k        : int = 20000,
                          return_gaussian: bool = False,
                          gaussian_search_tol: int = 2,
@@ -587,7 +578,7 @@ def estimate_uncertainty(viewpoint_camera,
         max_gaussian_idx, _ = find_max_uncertainty_gaussian_in_patch(
             viewpoint_camera, pc, pipe, bg_color,
             (wy0,wy1,wx0,wx1), cov_flat_dict,K_COLOR,
-            separate_sh, override_color, use_trained_exp,
+            separate_sh, override_color,
             patch_size, gaussian_search_tol=max(patch_size*2,24)
         )
     except RuntimeError:

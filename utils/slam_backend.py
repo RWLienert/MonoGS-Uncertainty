@@ -157,30 +157,6 @@ class BackEnd(mp.Process):
                 continue
             random_viewpoint_stack.append(viewpoint)
 
-        if uncertainty_mode:
-            # ----- uncertainty render -----
-            with torch.enable_grad():
-                out = estimate_uncertainty(
-                    viewpoint_camera = self.viewpoints[current_window[-1]],
-                    pc        = self.gaussians,
-                    pipe      = self.pipeline_params,
-                    bg_color  = self.background,
-                    patch_size      = self.patch_size,
-                    top_k           = self.top_k
-                )
-
-            rendering        = out["render"]
-            uncertainty      = out["uncertainty"]
-            max_patch_coords = out["max_patch_coords"]
-            max_patch_idx    = out["max_patch_idx"]
-            max_gauss_idx    = out["max_gaussian_idx"]
-
-            if max_patch_coords is not None:
-                y0, y1, x0, x1 = max_patch_coords
-                print(f"[View {idx:03d}] worst-patch #{max_patch_idx} "
-                      f"coords=({y0}:{y1}, {x0}:{x1})  "
-                      f"worst-gaussian #{max_gauss_idx}")
-
         for _ in range(iters):
             self.iteration_count += 1
             self.last_sent += 1
