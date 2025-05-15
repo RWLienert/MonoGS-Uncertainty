@@ -5,7 +5,7 @@ import torch
 import torch.multiprocessing as mp
 from tqdm import tqdm
 
-from gaussian_splatting.gaussian_renderer import render
+from gaussian_splatting.gaussian_renderer import render, estimate_uncertainty
 from gaussian_splatting.utils.loss_utils import l1_loss, ssim
 from utils.logging_utils import Log
 from utils.multiprocessing_utils import clone_obj
@@ -26,9 +26,10 @@ class BackEnd(mp.Process):
         self.backend_queue = None
         self.live_mode = False
 
-        self.uncertainty = False
+        self.uncertainty = True
         self.patch_size = 8
         self.top_k = 15000
+        self.process_once = True
 
         self.pause = False
         self.device = "cuda"
@@ -88,6 +89,7 @@ class BackEnd(mp.Process):
             self.backend_queue.get()
 
     def initialize_map(self, cur_frame_idx, viewpoint):
+        print("Initialise Map")
         for mapping_iteration in range(self.init_itr_num):
             self.iteration_count += 1
             render_pkg = render(
@@ -114,6 +116,38 @@ class BackEnd(mp.Process):
                 self.config, image, depth, viewpoint, opacity, initialization=True
             )
             loss_init.backward()
+
+            # 1. Collect gradients and update Fisher covariance
+            grads_dict = {}
+            for g in self.gaussians.optimizer.param_groups:
+                pname = g["name"]
+                flat_list = []
+                for p in g["params"]:
+                    if p.grad is not None:
+                        flat_list.append(p.grad.reshape(p.grad.shape[0], -1))
+                if flat_list:
+                    grads_dict[pname] = torch.cat(flat_list, dim=1).detach()
+            # Boost gradient for f_rest
+            if "f_rest" in grads_dict:
+                grads_dict["f_rest"] *= 5.0
+            grad_boost = dict(
+                xyz      = 200.0,
+                scaling  = 40.0,
+                rotation = 40.0,
+                opacity  = 500.0,
+                f_dc     = 3000.0,
+                f_rest   = 500.0
+            )
+            for name, g in grads_dict.items():
+                grads_dict[name] = g * grad_boost.get(name, 1.0)
+
+            # Update covariance with single Fisher step
+            self.gaussians.update_covariance(
+                grads_dict,
+                cur_iter   = mapping_iteration,
+                max_iter   = self.init_itr_num,
+                loss_scalar= loss_init.item()
+            )
 
             with torch.no_grad():
                 self.gaussians.max_radii2D[visibility_filter] = torch.max(
@@ -172,6 +206,7 @@ class BackEnd(mp.Process):
             for cam_idx in range(len(current_window)):
                 viewpoint = viewpoint_stack[cam_idx]
                 keyframes_opt.append(viewpoint)
+                
                 render_pkg = render(
                     viewpoint, self.gaussians, self.pipeline_params, self.background
                 )
@@ -235,6 +270,38 @@ class BackEnd(mp.Process):
             loss_mapping += 10 * isotropic_loss.mean()
             loss_mapping.backward()
             gaussian_split = False
+
+            # 1. Collect gradients and update Fisher covariance
+            grads_dict = {}
+            for g in self.gaussians.optimizer.param_groups:
+                pname = g["name"]
+                flat_list = []
+                for p in g["params"]:
+                    if p.grad is not None:
+                        flat_list.append(p.grad.reshape(p.grad.shape[0], -1))
+                if flat_list:
+                    grads_dict[pname] = torch.cat(flat_list, dim=1).detach()
+            # Boost gradient for f_rest
+            if "f_rest" in grads_dict:
+                grads_dict["f_rest"] *= 5.0
+            grad_boost = dict(
+                xyz      = 200.0,
+                scaling  = 40.0,
+                rotation = 40.0,
+                opacity  = 500.0,
+                f_dc     = 3000.0,
+                f_rest   = 500.0
+            )
+            for name, g in grads_dict.items():
+                grads_dict[name] = g * grad_boost.get(name, 1.0)
+
+            # Update covariance with single Fisher step
+            self.gaussians.update_covariance(
+                grads_dict,
+                cur_iter   = self.iteration_count,
+                max_iter   = iters,
+                loss_scalar= loss_mapping.item()
+            )
 
             ## Deinsifying / Pruning Gaussians
             with torch.no_grad():
@@ -348,38 +415,6 @@ class BackEnd(mp.Process):
             ) + self.opt_params.lambda_dssim * (1.0 - ssim(image, gt_image))
             loss.backward()
             
-            # 1. Collect gradients and update Fisher covariance
-            grads_dict = {}
-            for g in self.gaussians.optimizer.param_groups:
-                pname = g["name"]
-                flat_list = []
-                for p in g["params"]:
-                    if p.grad is not None:
-                        flat_list.append(p.grad.reshape(p.grad.shape[0], -1))
-                if flat_list:
-                    grads_dict[pname] = torch.cat(flat_list, dim=1).detach()
-            # Boost gradient for f_rest
-            if "f_rest" in grads_dict:
-                grads_dict["f_rest"] *= 5.0
-            grad_boost = dict(
-                xyz      = 200.0,
-                scaling  = 40.0,
-                rotation = 40.0,
-                opacity  = 500.0,
-                f_dc     = 3000.0,
-                f_rest   = 500.0
-            )
-            for name, g in grads_dict.items():
-                grads_dict[name] = g * grad_boost.get(name, 1.0)
-
-            # Update covariance with single Fisher step
-            self.gaussians.update_covariance(
-                grads_dict,
-                cur_iter   = iteration,
-                max_iter   = iteration_total,
-                loss_scalar= loss.item()
-            )
-            
             with torch.no_grad():
                 self.gaussians.max_radii2D[visibility_filter] = torch.max(
                     self.gaussians.max_radii2D[visibility_filter],
@@ -453,6 +488,30 @@ class BackEnd(mp.Process):
                     self.viewpoints[cur_frame_idx] = viewpoint
                     self.current_window = current_window
                     self.add_next_kf(cur_frame_idx, viewpoint, depth_map=depth_map)
+
+                    if self.uncertainty == True:
+                        with torch.enable_grad():
+                            render_pkg = estimate_uncertainty(
+                                viewpoint_camera = viewpoint,
+                                pc               = self.gaussians,
+                                pipe             = self.pipeline_params,
+                                bg_color         = self.background,
+                                scaling_modifier = 1.0,
+                                patch_size       = self.patch_size,
+                                top_k            = self.top_k
+                            )
+                        
+                        rendering        = render_pkg["render"]
+                        uncertainty      = render_pkg["uncertainty"]
+                        max_patch_coords = render_pkg["max_patch_coords"]
+                        max_patch_idx    = render_pkg["max_patch_idx"]
+                        max_gauss_idx    = render_pkg["max_gaussian_idx"]
+
+                        if max_patch_coords is not None:
+                            y0, y1, x0, x1 = max_patch_coords
+                            print(f"[View] worst-patch #{max_patch_idx} "
+                                f"coords=({y0}:{y1}, {x0}:{x1})  "
+                                f"worst-gaussian #{max_gauss_idx}")
 
                     opt_params = []
                     frames_to_optimize = self.config["Training"]["pose_window"]
