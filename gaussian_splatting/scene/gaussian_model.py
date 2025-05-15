@@ -146,6 +146,8 @@ class GaussianModel:
         Update diagonal covariance via Fisher-EMA using parameter gradients.
         Skips update if loss change <2% to save computation.
         """
+        print("Update Covariance")      
+        
         # Skip if loss change is too small
         if loss_scalar is not None and hasattr(self, '_prev_loss_scalar'):
             if abs(loss_scalar - self._prev_loss_scalar) < 0.02 * self._prev_loss_scalar:
@@ -208,6 +210,7 @@ class GaussianModel:
                 setattr(self, cov_name, var.unsqueeze(-1) * eye)
 
     def create_pcd_from_image(self, cam_info, init=False, scale=2.0, depthmap=None):
+        print("Create PCD From Image")
         cam = cam_info
         image_ab = (torch.exp(cam.exposure_a)) * cam.original_image + cam.exposure_b
         image_ab = torch.clamp(image_ab, 0.0, 1.0)
@@ -234,6 +237,7 @@ class GaussianModel:
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
 
     def create_pcd_from_image_and_depth(self, cam, rgb, depth, init=False):
+        print("Create PCD From Image and Depth")
         if init:
             downsample_factor = self.config["Dataset"]["pcd_downsample_init"]
         else:
@@ -303,6 +307,7 @@ class GaussianModel:
             )
         )
 
+        print("Resetting Added Covariance Metrics")
         N = fused_point_cloud.shape[0]
 
         self._xyz_cov = (
@@ -345,6 +350,7 @@ class GaussianModel:
     def extend_from_pcd(
         self, fused_point_cloud, features, scales, rots, opacities, kf_id
     ):
+        print("Extend From PCD")
         new_xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         new_features_dc = nn.Parameter(
             features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)
@@ -372,6 +378,7 @@ class GaussianModel:
     def extend_from_pcd_seq(
         self, cam_info, kf_id=-1, init=False, scale=2.0, depthmap=None
     ):
+        print("Extend From PCD SEQ")
         fused_point_cloud, features, scales, rots, opacities = (
             self.create_pcd_from_image(cam_info, init, scale=scale, depthmap=depthmap)
         )
@@ -559,6 +566,7 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
+        print("Prune Points")
         n_points = self._xyz.shape[0]
         if mask.shape[0] != n_points:
             logging.warning(f"[prune_points] shape mismatch: param pts={n_points}, mask={mask.shape[0]}")
@@ -576,6 +584,9 @@ class GaussianModel:
 
         oldN = self._xyz_cov.shape[0]
         newN = valid_points_mask.sum().item()
+        
+        print(f"OldN: {oldN}")
+        print(f"newN: {newN}")
         if newN < oldN:
             # --- 1) Cov Clip ---
             self._xyz_cov          = self._xyz_cov[valid_points_mask]
@@ -636,6 +647,7 @@ class GaussianModel:
 
     def cat_covariances(self, xyz_count, new_count):
         #cov + fisher_buf
+        print("Cat Covariances")
         
         device = self._xyz_cov.device
         # ----- Cov expansions -----
@@ -688,6 +700,7 @@ class GaussianModel:
         new_kf_ids=None,
         new_n_obs=None,
     ):
+        print("Densification_Postfix")
         d = {
             "xyz": new_xyz,
             "f_dc": new_features_dc,
@@ -696,6 +709,8 @@ class GaussianModel:
             "scaling": new_scaling,
             "rotation": new_rotation,
         }
+        print(f"Old Count: {self.get_xyz.shape[0]}")
+        print(f"New Count: {new_xyz.shape[0]}")
         old_count = self.get_xyz.shape[0]
         new_count = new_xyz.shape[0]
 
@@ -725,6 +740,7 @@ class GaussianModel:
             self._scaling.data.clamp_(-10,10)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
+        print("Densify And Split")
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -782,6 +798,7 @@ class GaussianModel:
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
+        print("Densify And Clone")
         n_init_points = self.get_xyz.shape[0]
         selected_pts_mask = torch.zeros(n_init_points,dtype=torch.bool, device="cuda")
         if grads.numel()>0:
@@ -815,6 +832,7 @@ class GaussianModel:
             self._scaling.data.clamp_(-10,10)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+        print("Densify And Prune")
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
