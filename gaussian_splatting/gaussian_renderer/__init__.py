@@ -612,18 +612,20 @@ def estimate_uncertainty(viewpoint_camera,
 #  VI.  Single Gaussian Localization (within worst patch)
 # =========================================================
 def find_max_uncertainty_gaussian_in_patch(
-        viewpoint_camera, pc, pipe, bg_color,
-        patch_coords, cov_flat_dict,
-        K_COLOR: float = K_COLOR,
-        override_color = None,
-        patch_size: int = 10,
-        gaussian_search_tol: int = 6
-    ):
+    viewpoint_camera, pc, pipe, bg_color,
+    patch_coords, cov_flat_dict,
+    K_COLOR: float = K_COLOR,
+    override_color=None,
+    patch_size: int = 10,
+    gaussian_search_tol: int = 6
+):
     """
     Identify the single Gaussian most responsible for uncertainty within a specified image patch.
     """
     # 1) Perform differentiable render for the patch
     params = get_params_for_grad(pc, requires_grad=True)
+    print(f"[DEBUG] Retrieved grad params: {', '.join(params.keys())}")
+    
     rd = render_with_grad(
         viewpoint_camera,
         params["xyz"], params["opacity"], params["scaling"],
@@ -635,7 +637,7 @@ def find_max_uncertainty_gaussian_in_patch(
     max_y0, max_y1, max_x0, max_x1 = patch_coords
 
     # 2) Filter visible Gaussians from render
-    vis_idx = rd["visibility_filter"][..., 0]
+    vis_idx = rd["visibility_filter"].nonzero(as_tuple=True)[0]
     xyz_v = params["xyz"][vis_idx]
     sc_v = params["scaling"][vis_idx]
     rot_v = params["rotation"][vis_idx]
@@ -645,13 +647,19 @@ def find_max_uncertainty_gaussian_in_patch(
     # 3) Select candidates within patch ± tolerance
     radii_v = rd["radii"][vis_idx]
     tol = max(gaussian_search_tol, radii_v.max() * 2.5)
+
     mask = (
         (pix_v[:, 0] >= max_y0 - tol) & (pix_v[:, 0] < max_y1 + tol) &
         (pix_v[:, 1] >= max_x0 - tol) & (pix_v[:, 1] < max_x1 + tol)
     )
     candidates = mask.nonzero(as_tuple=True)[0]
+
     if candidates.numel() == 0:
-        print(f"[DBG] No candidates found (tol={tol}) for patch {patch_coords}")
+        print(f"[WARN] No candidates found for patch {patch_coords}")
+        print(f"[DEBUG] Patch bounds: y({max_y0}-{max_y1}), x({max_x0}-{max_x1})")
+        print(f"[DEBUG] Gaussian 0 position: y={pix_v[0, 0]:.1f}, x={pix_v[0, 1]:.1f}")
+        print(f"[DEBUG] Patch bounds ± tol: y({max_y0 - tol}-{max_y1 + tol}), x({max_x0 - tol}-{max_x1 + tol})")
+
         return None, None
 
     cand_idx = vis_idx[candidates]
@@ -675,7 +683,12 @@ def find_max_uncertainty_gaussian_in_patch(
         c = (weight * (g_flat[:, :D] ** 2 * v_flat[:, :D]).sum(1))
         contrib = c if contrib is None else contrib + c
 
+    if contrib is None:
+        print("[WARN] No valid gradient contributions found.")
+        return None, None
+
     best_local = contrib.argmax()
     best_idx = cand_idx[best_local].item()
-    print(f"[DBG] {candidates.numel()} candidates evaluated, best={best_idx}, uncertainty={contrib[best_local]:.3e}")
+    print(f"[RESULT] Best Gaussian index: {best_idx}, Uncertainty: {contrib[best_local]:.3e}")
+    
     return best_idx, contrib
