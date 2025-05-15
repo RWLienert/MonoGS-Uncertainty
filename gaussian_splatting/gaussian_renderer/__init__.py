@@ -468,7 +468,6 @@ def estimate_uncertainty(viewpoint_camera,
                          pipe,
                          bg_color     : torch.Tensor,
                          scaling_modifier : float = 1.0,
-                         separate_sh  : bool = False,
                          override_color = None,
                          return_raw   : bool = False,
                          patch_size   : int = 4,
@@ -502,7 +501,6 @@ def estimate_uncertainty(viewpoint_camera,
         params["f_dc"], params["f_rest"],
         pc=pc, pipe=pipe, bg_color=bg_color,
         scaling_modifier=scaling_modifier,
-        separate_sh=separate_sh,
         override_color=override_color
     )
     rendered_image = render_dict["render"]  # [3,H,W]
@@ -578,7 +576,7 @@ def estimate_uncertainty(viewpoint_camera,
         max_gaussian_idx, _ = find_max_uncertainty_gaussian_in_patch(
             viewpoint_camera, pc, pipe, bg_color,
             (wy0,wy1,wx0,wx1), cov_flat_dict,K_COLOR,
-            separate_sh, override_color,
+            override_color,
             patch_size, gaussian_search_tol=max(patch_size*2,24)
         )
     except RuntimeError:
@@ -617,7 +615,6 @@ def find_max_uncertainty_gaussian_in_patch(
         viewpoint_camera, pc, pipe, bg_color,
         patch_coords, cov_flat_dict,
         K_COLOR: float = K_COLOR,
-        separate_sh: bool = False,
         override_color = None,
         patch_size: int = 10,
         gaussian_search_tol: int = 6
@@ -632,7 +629,7 @@ def find_max_uncertainty_gaussian_in_patch(
         params["xyz"], params["opacity"], params["scaling"],
         params["rotation"], params["f_dc"], params["f_rest"],
         pc=pc, pipe=pipe, bg_color=bg_color,
-        separate_sh=separate_sh, override_color=override_color
+        override_color=override_color
     )
 
     max_y0, max_y1, max_x0, max_x1 = patch_coords
