@@ -4,6 +4,11 @@ import time
 import torch
 import torch.multiprocessing as mp
 from tqdm import tqdm
+import os
+import torchvision
+import shutil
+import torchvision.transforms.functional as TF
+from PIL import Image
 
 from gaussian_splatting.gaussian_renderer import render, estimate_uncertainty
 from gaussian_splatting.utils.loss_utils import l1_loss, ssim
@@ -30,6 +35,7 @@ class BackEnd(mp.Process):
         self.patch_size = 8
         self.top_k = 15000
         self.worst_gaussian = -1
+        self.viewpoint_iteration = 1
 
         self.pause = False
         self.device = "cuda"
@@ -510,9 +516,45 @@ class BackEnd(mp.Process):
                         if max_patch_coords is not None:
                             y0, y1, x0, x1 = max_patch_coords
                             self.worst_gaussian = max_gauss_idx
-                            print(f"[View] worst-patch #{max_patch_idx} "
+                            print(f"[View {self.viewpoint_iteration}] worst-patch #{max_patch_idx} "
                                 f"coords=({y0}:{y1}, {x0}:{x1})  "
                                 f"worst-gaussian #{max_gauss_idx}")
+                        
+                        script_dir = os.path.dirname(os.path.abspath(__file__))
+                        experimental_dir = os.path.join(script_dir, "..", "experimental")
+                        gt_dir = os.path.join(script_dir, "..", "datasets/tum/rgbd_dataset_freiburg3_long_office_household/rgb")
+                        os.makedirs(experimental_dir, exist_ok=True)
+
+                        image_files = sorted(os.listdir(gt_dir))
+                        gt_filename = image_files[cur_frame_idx]
+                        gt_src_path = os.path.join(gt_dir, gt_filename)
+                        gt_dst_path = os.path.join(experimental_dir, f"gt_{self.viewpoint_iteration}.png")
+                        shutil.copy(gt_src_path, gt_dst_path)
+
+                        # Load GT image as tensor
+                        gt_pil = Image.open(gt_src_path).convert("RGB")
+                        gt_tensor = TF.to_tensor(gt_pil).to(rendering.device)  # shape: [3, H, W]
+
+                        # Resize GT if necessary to match rendering
+                        if gt_tensor.shape != rendering.shape:
+                            gt_pil = TF.resize(gt_pil, [rendering.shape[1], rendering.shape[2]])  # H, W
+                            gt_tensor = TF.to_tensor(gt_pil).to(rendering.device)
+
+                        # Clamp rendering
+                        rendering_clamped = rendering.clamp(0, 1)
+
+                        # Compute absolute difference
+                        diff = torch.abs(gt_tensor - rendering_clamped)
+
+                        # Save images
+                        torchvision.utils.save_image(uncertainty.clamp(0, 1),
+                            os.path.join(experimental_dir, f"uncertainty_{self.viewpoint_iteration}.png"))
+                        torchvision.utils.save_image(rendering_clamped,
+                            os.path.join(experimental_dir, f"rendering_{self.viewpoint_iteration}.png"))
+                        torchvision.utils.save_image(diff,
+                            os.path.join(experimental_dir, f"dif_{self.viewpoint_iteration}.png"))
+
+                        self.viewpoint_iteration += 1
 
                     opt_params = []
                     frames_to_optimize = self.config["Training"]["pose_window"]
