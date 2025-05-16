@@ -29,7 +29,7 @@ class BackEnd(mp.Process):
         self.uncertainty = True
         self.patch_size = 8
         self.top_k = 15000
-        self.process_once = True
+        self.worst_gaussian = -1
 
         self.pause = False
         self.device = "cuda"
@@ -434,7 +434,7 @@ class BackEnd(mp.Process):
         if tag is None:
             tag = "sync_backend"
 
-        msg = [tag, clone_obj(self.gaussians), self.occ_aware_visibility, keyframes]
+        msg = [tag, clone_obj(self.gaussians), self.occ_aware_visibility, keyframes, self.worst_gaussian]
         self.frontend_queue.put(msg)
 
     def run(self):
@@ -509,6 +509,7 @@ class BackEnd(mp.Process):
 
                         if max_patch_coords is not None:
                             y0, y1, x0, x1 = max_patch_coords
+                            self.worst_gaussian = max_gauss_idx
                             print(f"[View] worst-patch #{max_patch_idx} "
                                 f"coords=({y0}:{y1}, {x0}:{x1})  "
                                 f"worst-gaussian #{max_gauss_idx}")

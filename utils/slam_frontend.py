@@ -32,6 +32,7 @@ class FrontEnd(mp.Process):
         self.iteration_count = 0
         self.occ_aware_visibility = {}
         self.current_window = []
+        self.worst_gaussian = -1
 
         self.reset = True
         self.requested_init = False
@@ -187,6 +188,7 @@ class FrontEnd(mp.Process):
                         gtdepth=viewpoint.depth
                         if not self.monocular
                         else np.zeros((viewpoint.image_height, viewpoint.image_width)),
+                        worst_gaussian=self.worst_gaussian,
                     )
                 )
             if converged:
@@ -304,6 +306,7 @@ class FrontEnd(mp.Process):
         occ_aware_visibility = data[2]
         keyframes = data[3]
         self.occ_aware_visibility = occ_aware_visibility
+        self.worst_gaussian = data[4]
 
         for kf_id, kf_R, kf_T in keyframes:
             self.cameras[kf_id].update_RT(kf_R.clone(), kf_T.clone())
@@ -401,6 +404,7 @@ class FrontEnd(mp.Process):
                         current_frame=viewpoint,
                         keyframes=keyframes,
                         kf_window=current_window_dict,
+                        worst_gaussian=self.worst_gaussian,
                     )
                 )
 
