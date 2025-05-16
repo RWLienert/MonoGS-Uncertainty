@@ -86,6 +86,7 @@ class GaussianPacket:
         keyframes=None,
         finish=False,
         kf_window=None,
+        worst_gaussian=-1,
     ):
         self.has_gaussians = False
         if gaussians is not None:
@@ -111,6 +112,7 @@ class GaussianPacket:
         self.keyframes = keyframes
         self.finish = finish
         self.kf_window = kf_window
+        self.worst_gaussian = worst_gaussian
 
     def resize_img(self, img, width):
         if img is None:

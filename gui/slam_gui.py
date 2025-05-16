@@ -51,6 +51,11 @@ class SLAM_GUI:
         self.kf_window = None
         self.render_img = None
 
+        self.old_pos = None
+        self.old_worst_gaussian = None
+        self.error_sphere_pos = None
+        self.error_sphere_scale = np.array([0.05, 0.05, 0.05])
+
         if params_gui is not None:
             self.background = params_gui.background
             self.gaussian_cur = params_gui.gaussians
@@ -60,6 +65,7 @@ class SLAM_GUI:
             self.pipe = params_gui.pipe
 
         self.gaussian_nums = []
+        self.worst_gaussian = -1
 
         self.g_camera = util.Camera(self.window_h, self.window_w)
         self.window_gl = self.init_glfw()
@@ -416,6 +422,18 @@ class SLAM_GUI:
         gaussian_packet = get_latest_queue(q)
         if gaussian_packet is None:
             return
+        
+        self.worst_gaussian = gaussian_packet.worst_gaussian
+        if self.worst_gaussian != -1 and self.old_worst_gaussian != self.worst_gaussian:
+            self.old_worst_gaussian = self.worst_gaussian
+            i = self.worst_gaussian
+
+            # Get position from Gaussian
+            self.error_sphere_pos = self.gaussian_cur.get_xyz[i].cpu().numpy()
+            try:
+                self.widget3d.scene.remove_geometry("uncertainty_sphere")
+            except:
+                pass
 
         if gaussian_packet.has_gaussians:
             self.gaussian_cur = gaussian_packet
@@ -593,35 +611,26 @@ class SLAM_GUI:
         return rendering_data
 
     def render_o3d_image(self, results, current_cam):
-        if self.uncertainty_chbox.checked:
-            # Choose a Gaussian index
-            i = 0
+        if self.uncertainty_chbox.checked and self.worst_gaussian != -1:
+            
+            # Create a largest error sphere
+            largest_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
+            largest_error_sphere.compute_vertex_normals()
+            largest_error_sphere.paint_uniform_color([1.0, 0.0, 0.0])  # Red
 
-            # Get position and scale from Gaussian
-            pos = self.gaussian_cur.get_xyz[i].cpu().numpy()         # (3,)
-            scale = self.gaussian_cur.get_scaling[i].cpu().numpy()   # (3,)
-
-            # Create a sphere (which we’ll scale into an ellipsoid)
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
-            sphere.compute_vertex_normals()
-            sphere.paint_uniform_color([1.0, 0.0, 0.0])  # Red
-
-            # Build a transformation matrix to apply scale and position
             transform = np.eye(4)
-            transform[0, 0] = scale[0]
-            transform[1, 1] = scale[1]
-            transform[2, 2] = scale[2]
-            transform[:3, 3] = pos  # translation
-
-            # Apply the transformation
-            sphere.transform(transform)
+            transform[0, 0] = self.error_sphere_scale[0]
+            transform[1, 1] = self.error_sphere_scale[1]
+            transform[2, 2] = self.error_sphere_scale[2]
+            transform[:3, 3] = self.error_sphere_pos
+            largest_error_sphere.transform(transform)
 
             # Set material
             material = o3d.visualization.rendering.MaterialRecord()
             material.shader = "defaultLit"
 
             # Add to scene
-            self.widget3d.scene.add_geometry("uncertainty_sphere", sphere, material)
+            self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material)
 
             # Return RGB image for rendering
             rgb = (
@@ -635,7 +644,10 @@ class SLAM_GUI:
             render_img = o3d.geometry.Image(rgb)
             
         elif self.uncertainty_chbox.checked == False:
-            self.widget3d.scene.remove_geometry("uncertainty_sphere")
+            try:
+                self.widget3d.scene.remove_geometry("uncertainty_sphere")
+            except:
+                pass
 
         if self.depth_chbox.checked:
             depth = results["depth"]
