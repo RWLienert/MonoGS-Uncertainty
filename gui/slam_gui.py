@@ -46,15 +46,19 @@ class SLAM_GUI:
         self.gaussian_cur = None
         self.pipe = None
         self.background = None
+        self.itr_per_avg = None
 
         self.init = False
         self.kf_window = None
         self.render_img = None
 
-        self.old_pos = None
         self.old_worst_gaussian = None
         self.error_sphere_pos = None
-        self.error_sphere_scale = np.array([0.05, 0.05, 0.05])
+        self.error_sphere_scale = np.array([0.03, 0.03, 0.03])
+
+        self.gaussian_error_positions = []
+        self.average_pos = None
+        self.gaussian_average_positions = []
 
         if params_gui is not None:
             self.background = params_gui.background
@@ -63,6 +67,7 @@ class SLAM_GUI:
             self.q_main2vis = params_gui.q_main2vis
             self.q_vis2main = params_gui.q_vis2main
             self.pipe = params_gui.pipe
+            self.itr_per_avg = params_gui.itr_per_avg
 
         self.gaussian_nums = []
         self.worst_gaussian = -1
@@ -430,6 +435,17 @@ class SLAM_GUI:
 
             # Get position from Gaussian
             self.error_sphere_pos = self.gaussian_cur.get_xyz[i].cpu().numpy()
+            self.gaussian_error_positions.append(self.error_sphere_pos)
+
+            if len(self.gaussian_error_positions) == self.itr_per_avg:
+                average_value = 0
+                for val in self.gaussian_error_positions:
+                    average_value += val
+                
+                self.average_pos = average_value/self.itr_per_avg
+                self.gaussian_error_positions = []
+                self.gaussian_average_positions.append(self.average_pos)
+
             try:
                 self.widget3d.scene.remove_geometry("uncertainty_sphere")
             except:
@@ -632,6 +648,26 @@ class SLAM_GUI:
             # Add to scene
             self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material)
 
+            if self.average_pos is not None:
+                for i, pos in enumerate(self.gaussian_average_positions):
+                    average_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
+                    average_error_sphere.compute_vertex_normals()
+                    average_error_sphere.paint_uniform_color([0.0, 1.0, 0.0])  # Green
+
+                    transform = np.eye(4)
+                    transform[0, 0] = self.error_sphere_scale[0]
+                    transform[1, 1] = self.error_sphere_scale[1]
+                    transform[2, 2] = self.error_sphere_scale[2]
+                    transform[:3, 3] = pos
+                    average_error_sphere.transform(transform)
+
+                    # Set material
+                    material = o3d.visualization.rendering.MaterialRecord()
+                    material.shader = "defaultLit"
+
+                    # Add to scene with unique name
+                    self.widget3d.scene.add_geometry(f"average_uncertainty_sphere_{i}", average_error_sphere, material)
+
             # Return RGB image for rendering
             rgb = (
                 (torch.clamp(results["render"], min=0, max=1.0) * 255)
@@ -646,6 +682,8 @@ class SLAM_GUI:
         elif self.uncertainty_chbox.checked == False:
             try:
                 self.widget3d.scene.remove_geometry("uncertainty_sphere")
+                for i, _ in enumerate(self.gaussian_average_positions):
+                    self.widget3d.scene.remove_geometry(f"average_uncertainty_sphere_{i}")
             except:
                 pass
 

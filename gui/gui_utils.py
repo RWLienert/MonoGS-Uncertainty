@@ -169,9 +169,11 @@ class ParamsGUI:
         gaussians=None,
         q_main2vis=None,
         q_vis2main=None,
+        itr_per_avg=None,
     ):
         self.pipe = pipe
         self.background = background
         self.gaussians = gaussians
         self.q_main2vis = q_main2vis
         self.q_vis2main = q_vis2main
+        self.itr_per_avg = itr_per_avg
