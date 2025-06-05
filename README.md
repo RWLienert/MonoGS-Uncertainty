@@ -4,7 +4,7 @@
 
 <p align="center">
 
-  <h1 align="center"> Gaussian Splatting SLAM
+  <h1 align="center"> Gaussian Splatting SLAM with Uncertainty Estimation and Guidance
   </h1>
   <p align="center">
     <a href="https://muskie82.github.io/"><strong>*Hidenobu Matsuki</strong></a>
@@ -34,7 +34,7 @@
   </a>
 </p>
 <p align="center">
-This software implements dense SLAM system presented in our paper <a href="https://arxiv.org/abs/2312.06741">Gaussian Splatting SLAM with Uncertainty Estimation and Guidance</a> in CVPR'24.
+This software implements dense SLAM system presented in our paper <a href="https://arxiv.org/abs/2312.06741">Gaussian Splatting SLAM</a> in CVPR'24.
 The method demonstrates the first monocular SLAM solely based on 3D Gaussian Splatting (left), which also supports Stereo/RGB-D inputs (middle/right).
 </p>
 <br>
