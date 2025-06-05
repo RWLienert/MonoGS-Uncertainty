@@ -144,7 +144,7 @@ Example input:
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size 4 --top_k 30000 --keyframes_per_calculation 2 --itr_per_avg 3 
 ```
 
-Important: Once the viewer loads, select the checkbox **Uncertainty** to see the visualisations. Uncertainty and Render images are automatically saved to a file called experiments.
+Once the viewer loads, select the checkbox **Uncertainty** to see the visualisations. Uncertainty and Render images are automatically saved to a file called experiments.
 
 <p align="center">
   <a href="">
