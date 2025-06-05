@@ -32,7 +32,7 @@ class FrontEnd(mp.Process):
         self.iteration_count = 0
         self.occ_aware_visibility = {}
         self.current_window = []
-        self.worst_gaussian = -1
+        self.worst_gaussian = []
 
         self.reset = True
         self.requested_init = False
