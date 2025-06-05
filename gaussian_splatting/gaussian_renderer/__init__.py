@@ -605,6 +605,7 @@ def estimate_uncertainty(viewpoint_camera,
         "max_patch_coords": (wy0, wy1, wx0, wx1),
         "max_patch_idx": worst_idx,
         "max_gaussian_idx": max_gaussian_idx,
+        "max_uncertainty": float(patch_unc[worst_idx]),
         **({"uncertainty_raw": uncertainty_img} if return_raw else {})
     }
 
