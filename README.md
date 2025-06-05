@@ -126,13 +126,12 @@ To turn on the uncertainty calculation, add the argument --uncertainty_mode when
 python slam.py --config {.yaml path} --uncertainty_mode
 ```
 
-Following this, there are 4 other settings (use --help for more assistance). All are run in the format below. Then, once the viewer loads, select the checkbox **Uncertainty** to see visualisations
+Following this, there are 4 other settings (use --help for more assistance). All are run in the format below
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size <int> --top_k <int> --keyframes_per_calculation <int> --itr_per_avg <int> 
 ```
 
-`--path_size` Size (in pixels) of the square patches used for first-pass variance scanning. Smaller = finer localisation but slower; larger = coarser but faster
-Uncertainty and Render images are automatically saved to a file called experiments. Default = 8
+`--path_size` Size (in pixels) of the square patches used for first-pass variance scanning. Smaller = finer localisation but slower; larger = coarser but faster. Default = 8
 
 `--top_k` After the fast scan, only the top-k most variant patches enter the expensive Fisher back-prop step. Reducing `top_k` speeds up rendering but may miss rare artefacts; increasing gives more accurate maps at the cost of GPU time. Default = 16000
 
@@ -144,6 +143,8 @@ Example input:
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size 4 --top_k 30000 --keyframes_per_calculation 2 --itr_per_avg 3 
 ```
+
+Important: Once the viewer loads, select the checkbox **Uncertainty** to see the visualisations. Uncertainty and Render images are automatically saved to a file called experiments.
 
 <p align="center">
   <a href="">
