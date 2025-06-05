@@ -86,7 +86,7 @@ class GaussianPacket:
         keyframes=None,
         finish=False,
         kf_window=None,
-        worst_gaussian=-1,
+        worst_gaussian=[],
     ):
         self.has_gaussians = False
         if gaussians is not None:
