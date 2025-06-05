@@ -586,23 +586,22 @@ class BackEnd(mp.Process):
                         if max_patch_coords is not None:
                             y0, y1, x0, x1 = max_patch_coords
                             self.worst_gaussian = [max_gauss_idx, max_uncertainty, uncertainty_viewpoint.camera_center.tolist()]
-                            print(self.worst_gaussian)
                             print(f"[View {self.viewpoint_iteration}] worst-patch #{max_patch_idx} "
                                 f"coords=({y0}:{y1}, {x0}:{x1})  "
                                 f"worst-gaussian #{max_gauss_idx}")
                         
                         # Create directories and find ground truth image for a specific key frame
                         script_dir = os.path.dirname(os.path.abspath(__file__))
-                        experimental_dir = os.path.join(script_dir, "..", "experimental")
+                        experiments_dir = os.path.join(script_dir, "..", "experiments")
                         gt_dir = os.path.join(script_dir, "..", "datasets/tum/rgbd_dataset_freiburg3_long_office_household/rgb")
-                        os.makedirs(experimental_dir, exist_ok=True)
+                        os.makedirs(experiments_dir, exist_ok=True)
 
                         if self.ordered_gt_image_files == None:
                             image_files = sorted(os.listdir(gt_dir), key=lambda f: tuple(map(int, re.findall(r'\d+', f))))
                             self.ordered_gt_image_files = image_files
                         gt_filename = self.ordered_gt_image_files[cur_frame_idx]
                         gt_src_path = os.path.join(gt_dir, gt_filename)
-                        gt_dst_path = os.path.join(experimental_dir, f"gt_{self.viewpoint_iteration}.png")
+                        gt_dst_path = os.path.join(experiments_dir, f"gt_{self.viewpoint_iteration}.png")
                         shutil.copy(gt_src_path, gt_dst_path)
 
                         # Load GT image as tensor
@@ -622,11 +621,11 @@ class BackEnd(mp.Process):
 
                         # Save images
                         torchvision.utils.save_image(uncertainty.clamp(0, 1),
-                            os.path.join(experimental_dir, f"uncertainty_{self.viewpoint_iteration}.png"))
+                            os.path.join(experiments_dir, f"uncertainty_{self.viewpoint_iteration}.png"))
                         torchvision.utils.save_image(rendering_clamped,
-                            os.path.join(experimental_dir, f"rendering_{self.viewpoint_iteration}.png"))
+                            os.path.join(experiments_dir, f"rendering_{self.viewpoint_iteration}.png"))
                         torchvision.utils.save_image(diff,
-                            os.path.join(experimental_dir, f"dif_{self.viewpoint_iteration}.png"))
+                            os.path.join(experiments_dir, f"dif_{self.viewpoint_iteration}.png"))
 
                         self.viewpoint_iteration += 1
 

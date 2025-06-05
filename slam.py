@@ -92,7 +92,7 @@ class SLAM:
 
         self.backend.uncertainty = uncertainty_mode
         self.backend.patch_size = patch_size
-        self.backend.frames_per_calculation = frames_per_calculation
+        self.backend.keyframes_per_calculation = keyframes_per_calculation
         self.backend.top_k = top_k
 
         self.backend.set_hyperparams()
