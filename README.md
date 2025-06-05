@@ -48,7 +48,7 @@ The method demonstrates the first monocular SLAM solely based on 3D Gaussian Spl
 - This fork adds Fisher-information-based uncertainty estimation on top of MonoGS. All datasets, system/environment requirements, and training commands are compatible with the original repo.
 - Using this uncertainty estimation, the program calculates the highest error gaussian that contibutes to a viewpoint and represents this in the 3D viewer with a sphere and an accompanying vector in the direction of capture which is scaled to the size of the error. 
 - After exploring the scene, the user will have gathered a set of errors along with their origins and uncertainty, which can then be used to guide refinement and additional data capture
-- Refer to the **Run** section which provides instructions on how to use this feature
+- Refer to the **Run** section and the sub heading **Uncertainty Settings** which provides instructions on how to use this feature
 
 # Getting Started
 ## Installation
