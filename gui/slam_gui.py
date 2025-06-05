@@ -52,12 +52,12 @@ class SLAM_GUI:
         self.kf_window = None
         self.render_img = None
 
-        self.old_worst_gaussian = None
+        self.old_worst_gaussian = []
         self.error_sphere_pos = None
         self.error_sphere_scale = np.array([0.03, 0.03, 0.03])
 
         self.gaussian_error_positions = []
-        self.average_pos = None
+        self.average_pos = []
         self.gaussian_average_positions = []
 
         if params_gui is not None:
@@ -70,7 +70,7 @@ class SLAM_GUI:
             self.itr_per_avg = params_gui.itr_per_avg
 
         self.gaussian_nums = []
-        self.worst_gaussian = -1
+        self.worst_gaussian = []
 
         self.g_camera = util.Camera(self.window_h, self.window_w)
         self.window_gl = self.init_glfw()
@@ -429,22 +429,29 @@ class SLAM_GUI:
             return
         
         self.worst_gaussian = gaussian_packet.worst_gaussian
-        if self.worst_gaussian != -1 and self.old_worst_gaussian != self.worst_gaussian:
+        if self.worst_gaussian != [] and self.old_worst_gaussian != self.worst_gaussian:
             self.old_worst_gaussian = self.worst_gaussian
-            i = self.worst_gaussian
+            i = self.worst_gaussian[0]
 
             # Get position from Gaussian
             self.error_sphere_pos = self.gaussian_cur.get_xyz[i].cpu().numpy()
-            self.gaussian_error_positions.append(self.error_sphere_pos)
+            self.gaussian_error_positions.append((self.error_sphere_pos, self.worst_gaussian[1], np.array(self.worst_gaussian[2])))
 
             if len(self.gaussian_error_positions) == self.itr_per_avg:
-                average_value = 0
+                average_pos = 0
+                average_uncertainty = 0
+                average_camera_pos = 0
+
                 for val in self.gaussian_error_positions:
-                    average_value += val
+                    average_pos += val[0]
+                    average_uncertainty += val[1]
+                    average_camera_pos += val[2]
                 
-                self.average_pos = average_value/self.itr_per_avg
+                self.average_pos = average_pos/self.itr_per_avg
+                self.average_uncertainty = average_uncertainty/self.itr_per_avg
+                self.average_camera_pos = average_camera_pos/self.itr_per_avg
                 self.gaussian_error_positions = []
-                self.gaussian_average_positions.append(self.average_pos)
+                self.gaussian_average_positions.append((self.average_pos, self.average_uncertainty, self.average_camera_pos))
 
             try:
                 self.widget3d.scene.remove_geometry("uncertainty_sphere")
@@ -627,7 +634,7 @@ class SLAM_GUI:
         return rendering_data
 
     def render_o3d_image(self, results, current_cam):
-        if self.uncertainty_chbox.checked and self.worst_gaussian != -1:
+        if self.uncertainty_chbox.checked and self.worst_gaussian != []:
             
             # Create a largest error sphere
             largest_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
@@ -648,8 +655,9 @@ class SLAM_GUI:
             # Add to scene
             self.widget3d.scene.add_geometry("uncertainty_sphere", largest_error_sphere, material)
 
+            # Average gaussian rendering
             if self.average_pos is not None:
-                for i, pos in enumerate(self.gaussian_average_positions):
+                for i, (sphere_pos, error_val, camera_pos) in enumerate(self.gaussian_average_positions):
                     average_error_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
                     average_error_sphere.compute_vertex_normals()
                     average_error_sphere.paint_uniform_color([0.0, 1.0, 0.0])  # Green
@@ -658,7 +666,7 @@ class SLAM_GUI:
                     transform[0, 0] = self.error_sphere_scale[0]
                     transform[1, 1] = self.error_sphere_scale[1]
                     transform[2, 2] = self.error_sphere_scale[2]
-                    transform[:3, 3] = pos
+                    transform[:3, 3] = sphere_pos
                     average_error_sphere.transform(transform)
 
                     # Set material
@@ -667,6 +675,45 @@ class SLAM_GUI:
 
                     # Add to scene with unique name
                     self.widget3d.scene.add_geometry(f"average_uncertainty_sphere_{i}", average_error_sphere, material)
+
+                    # Direction line
+                    scale = 2
+
+                    direction = np.array(camera_pos) - np.array(sphere_pos)
+                    direction_norm = direction / np.linalg.norm(direction)
+                    line_end = np.array(sphere_pos) + (direction_norm * (error_val * scale))
+
+                    points = [sphere_pos, line_end]
+                    lines = [[0, 1]]
+                    colors = [[1.0, 0.0, 0.0]]  # Red line to indicate direction and error magnitude
+
+                    line_set = o3d.geometry.LineSet()
+                    line_set.points = o3d.utility.Vector3dVector(points)
+                    line_set.lines = o3d.utility.Vector2iVector(lines)
+                    line_set.colors = o3d.utility.Vector3dVector(colors)
+
+                    line_material = o3d.visualization.rendering.MaterialRecord()
+                    line_material.shader = "unlitLine"
+                    line_material.line_width = 5.0
+
+                    self.widget3d.scene.add_geometry(f"error_line_{i}", line_set, line_material)
+            
+                # Draw lines between average uncertainty spheres
+                if len(self.gaussian_average_positions) >= 2:
+                    self.widget3d.scene.remove_geometry("connection_lines")
+                    
+                    points = [entry[0] for entry in self.gaussian_average_positions]
+                    lines = [[i, i + 1] for i in range(len(points) - 1)]
+
+                    line_set = o3d.geometry.LineSet()
+                    line_set.points = o3d.utility.Vector3dVector(points)
+                    line_set.lines = o3d.utility.Vector2iVector(lines)
+                    line_set.colors = o3d.utility.Vector3dVector([[0.0, 0.0, 1.0] for _ in lines])  # Blue lines
+
+                    line_material = o3d.visualization.rendering.MaterialRecord()
+                    line_material.shader = "unlitLine"
+
+                    self.widget3d.scene.add_geometry("connection_lines", line_set, line_material)
 
             # Return RGB image for rendering
             rgb = (
@@ -684,6 +731,8 @@ class SLAM_GUI:
                 self.widget3d.scene.remove_geometry("uncertainty_sphere")
                 for i, _ in enumerate(self.gaussian_average_positions):
                     self.widget3d.scene.remove_geometry(f"average_uncertainty_sphere_{i}")
+                    self.widget3d.scene.remove_geometry(f"error_line_{i}")
+                self.widget3d.scene.remove_geometry("connection_lines")
             except:
                 pass
 
