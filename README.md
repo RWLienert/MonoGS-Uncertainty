@@ -45,9 +45,9 @@ The method demonstrates the first monocular SLAM solely based on 3D Gaussian Spl
 - **[New]** Speed-up version of our code is available in `dev.speedup` branch, It achieves up to 10fps on monocular fr3/office sequence while keeping consistent performance (tested on RTX4090/i9-12900K). The code will be merged into the main branch after further refactoring and testing.
 
 # Changes
-- This fork adds Fisher information based uncertainty estimation on top of MonoGS. All datasets, system/environment requirements, and training commands are compatible with the original repo.
+- This fork adds Fisher-information-based uncertainty estimation on top of MonoGS. All datasets, system/environment requirements, and training commands are compatible with the original repo.
 - Using this uncertainty estimation, the program calculates the highest error gaussian that contibutes to a viewpoint and represents this in the 3D viewer with a sphere and an accompanying vector in the direction of capture which is scaled to the size of the error. 
-- After exploring the scene, the user will have gathered a set of errors along with their origins and their effects on scene fidelity, which can then guide refinement and additional data capture
+- After exploring the scene, the user will have gathered a set of errors along with their origins and uncertainty, which can then be used to guide refinement and additional data capture
 - Refer to the **Run** section which provides instructions on how to use this feature
 
 # Getting Started
@@ -120,7 +120,8 @@ python slam.py --config configs/stereo/euroc/mh02.yaml
 ```
 
 ### Uncertainty Settings
-To turn on uncertainty add the argument --uncertainty_mode which is off by default
+To turn on the uncertainty calculation, add the argument --uncertainty_mode when running the program which is off by default. Next, in the viewer, select the checkbox **Uncertainty** to see visualisations
+
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode
 ```
@@ -129,19 +130,26 @@ Following this, there are 4 other settings (use --help for more assistance). All
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size <int> --top_k <int> --keyframes_per_calculation <int> --itr_per_avg <int> 
 ```
-`--path_size`: Size (in pixels) of the square patches used for first-pass variance scanning. Smaller = finer localisation but slower; larger = coarser but faster
+`--path_size` Size (in pixels) of the square patches used for first-pass variance scanning. Smaller = finer localisation but slower; larger = coarser but faster
 Uncertainty and Render images are automatically saved to a file called experiments. Default = 8
 
-`--top_k`: After the fast scan, only the top-k most variant patches enter the expensive Fisher back-prop step. Reducing `top_k` speeds up rendering but may miss rare artefacts; increasing gives more accurate maps at the cost of GPU time. Default = 16000
+`--top_k` After the fast scan, only the top-k most variant patches enter the expensive Fisher back-prop step. Reducing `top_k` speeds up rendering but may miss rare artefacts; increasing gives more accurate maps at the cost of GPU time. Default = 16000
 
-`--keyframes_per_calculation`: The number of keyframes that pass before calling the uncertainty logic. This can be run every keyframe but performance is impacted. When uncertainty is run, a red sphere will be placed in the scene at the worst gaussian's position and reset upon the next call. Default = 3
+`--keyframes_per_calculation` The number of keyframes that pass before calling the uncertainty logic. This can be run every keyframe but performance is impacted. When uncertainty is run, a red sphere will be placed in the scene at the current worst gaussian's position and reset upon the next call. Default = 3
 
-`--itr_per_avg`: The number of uncertainty iterations that take place before averaging the worst gaussians. After every `itr_per_avg` iterations, the system computes an average of the worst-scoring gaussians and visualises them as a single permanent green sphere with a red vector in the direction of capture, scaled via the uncertainty. This averaging resets each cycle and helps to guide additional data capture after a sparse initial scene pass. Default = 3
+`--itr_per_avg` The number of uncertainty iterations that take place before averaging the worst gaussians. After every `itr_per_avg` iterations, the system computes an average of the last `itr_per_avg` worst gaussians and visualises them as a single permanent green sphere with a red vector in the direction of capture, scaled via the uncertainty. This averaging resets each cycle (sphere remains) and helps to guide additional data capture after a sparse initial scene pass. Default = 3
 
 Example input:
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size 4 --top_k 30000 --keyframes_per_calculation 2 --itr_per_avg 3 
 ```
+
+<p align="center">
+  <a href="">
+    <img src="./media/uncertainty.png" alt="teaser" width="50%">
+  </a>
+</p>
+The above image highlights what a program with the uncertainty calculation would look like. Green spheres = averaged worst gaussian across `itr_per_avg` number of uncertainty calculations. The red lines indicate the severity of the uncertainty and which direction it comes from. After an initial pass, the user has a clear idea of where more data needs to be collected and from which viewpoint/orientation.
 
 ## Live demo with Realsense
 First, you'll need to install `pyrealsense2`.
