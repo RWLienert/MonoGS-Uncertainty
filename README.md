@@ -48,7 +48,7 @@ The method demonstrates the first monocular SLAM solely based on 3D Gaussian Spl
 - This fork adds Fisher-information-based uncertainty estimation on top of MonoGS. All datasets, system/environment requirements, and training commands are compatible with the original repo.
 - Using this uncertainty estimation, the program calculates the highest error gaussian that contibutes to a viewpoint and represents this in the 3D viewer with a sphere and an accompanying vector in the direction of capture which is scaled to the size of the error. 
 - After exploring the scene, the user will have gathered a set of errors along with their origins and uncertainty, which can then be used to guide refinement and additional data capture
-- Refer to the **Run** section and the sub heading **Uncertainty Settings** which provides instructions on how to use this feature
+- Refer to the **Run** section and the subheading **Uncertainty Settings** which provides instructions on how to use this feature
 
 # Getting Started
 ## Installation
@@ -120,16 +120,17 @@ python slam.py --config configs/stereo/euroc/mh02.yaml
 ```
 
 ### Uncertainty Settings
-To turn on the uncertainty calculation, add the argument --uncertainty_mode when running the program which is off by default. Next, in the viewer, select the checkbox **Uncertainty** to see visualisations
+To turn on the uncertainty calculation, add the argument --uncertainty_mode when running the program which is off by default.
 
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode
 ```
 
-Following this, there are 4 other settings (use --help for more assistance). All are run in the format
+Following this, there are 4 other settings (use --help for more assistance). All are run in the format below. Then, once the viewer loads, select the checkbox **Uncertainty** to see visualisations
 ```bash
 python slam.py --config {.yaml path} --uncertainty_mode --patch_size <int> --top_k <int> --keyframes_per_calculation <int> --itr_per_avg <int> 
 ```
+
 `--path_size` Size (in pixels) of the square patches used for first-pass variance scanning. Smaller = finer localisation but slower; larger = coarser but faster
 Uncertainty and Render images are automatically saved to a file called experiments. Default = 8
 
@@ -146,7 +147,7 @@ python slam.py --config {.yaml path} --uncertainty_mode --patch_size 4 --top_k 3
 
 <p align="center">
   <a href="">
-    <img src="./media/uncertainty.png" alt="teaser" width="50%">
+    <img src="./media/uncertainty.png" alt="teaser" width="80%">
   </a>
 </p>
 The above image highlights what a program with the uncertainty calculation would look like. Green spheres = averaged worst gaussian across `itr_per_avg` number of uncertainty calculations. The red lines indicate the severity of the uncertainty and which direction it comes from. After an initial pass, the user has a clear idea of where more data needs to be collected and from which viewpoint/orientation.
