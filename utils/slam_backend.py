@@ -36,9 +36,10 @@ class BackEnd(mp.Process):
         self.uncertainty = True
         self.patch_size = 8
         self.top_k = 15000
-        self.worst_gaussian = -1
+        self.worst_gaussian = []
         self.viewpoint_iteration = 1
         self.ordered_gt_image_files = None
+        self.keyframe_count = 0
 
         self.pause = False
         self.device = "cuda"
@@ -492,6 +493,7 @@ class BackEnd(mp.Process):
                     viewpoint = data[2]
                     current_window = data[3]
                     depth_map = data[4]
+                    self.keyframe_count += 1
 
                     self.viewpoints[cur_frame_idx] = viewpoint
                     self.current_window = current_window
@@ -560,7 +562,7 @@ class BackEnd(mp.Process):
                     background_input = copy.deepcopy(self.background)
 
                     # Uncertainty Logic
-                    if self.uncertainty == True:
+                    if self.uncertainty == True and self.keyframe_count % 8 == 0:
                         with torch.enable_grad():
                             render_pkg = estimate_uncertainty(
                                 viewpoint_camera = uncertainty_viewpoint,
@@ -577,11 +579,13 @@ class BackEnd(mp.Process):
                         max_patch_coords = render_pkg["max_patch_coords"]
                         max_patch_idx    = render_pkg["max_patch_idx"]
                         max_gauss_idx    = render_pkg["max_gaussian_idx"]
+                        max_uncertainty  = render_pkg["max_uncertainty"]
 
                         # Print out worst gaussian information
                         if max_patch_coords is not None:
                             y0, y1, x0, x1 = max_patch_coords
-                            self.worst_gaussian = max_gauss_idx
+                            self.worst_gaussian = [max_gauss_idx, max_uncertainty, uncertainty_viewpoint.camera_center.tolist()]
+                            print(self.worst_gaussian)
                             print(f"[View {self.viewpoint_iteration}] worst-patch #{max_patch_idx} "
                                 f"coords=({y0}:{y1}, {x0}:{x1})  "
                                 f"worst-gaussian #{max_gauss_idx}")
