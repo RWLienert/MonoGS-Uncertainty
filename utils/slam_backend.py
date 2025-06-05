@@ -35,6 +35,7 @@ class BackEnd(mp.Process):
 
         self.uncertainty = True
         self.patch_size = 8
+        self.keyframes_per_calculation = 1
         self.top_k = 15000
         self.worst_gaussian = []
         self.viewpoint_iteration = 1
@@ -562,7 +563,7 @@ class BackEnd(mp.Process):
                     background_input = copy.deepcopy(self.background)
 
                     # Uncertainty Logic
-                    if self.uncertainty == True and self.keyframe_count % 8 == 0:
+                    if self.uncertainty == True and self.keyframe_count % self.keyframes_per_calculation == 0:
                         with torch.enable_grad():
                             render_pkg = estimate_uncertainty(
                                 viewpoint_camera = uncertainty_viewpoint,

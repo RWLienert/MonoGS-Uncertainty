@@ -23,7 +23,7 @@ from utils.slam_frontend import FrontEnd
 
 
 class SLAM:
-    def __init__(self, config, save_dir=None, uncertainty_mode=False, patch_size=8, top_k=15000, itr_per_avg=3):
+    def __init__(self, config, save_dir=None, uncertainty_mode=False, patch_size=8, top_k=15000, keyframes_per_calculation=3, itr_per_avg=3):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
 
@@ -92,6 +92,7 @@ class SLAM:
 
         self.backend.uncertainty = uncertainty_mode
         self.backend.patch_size = patch_size
+        self.backend.frames_per_calculation = frames_per_calculation
         self.backend.top_k = top_k
 
         self.backend.set_hyperparams()
@@ -211,7 +212,8 @@ if __name__ == "__main__":
     parser.add_argument("--uncertainty_mode", action="store_true", help="Enable uncertainty rendering")
     parser.add_argument("--patch_size", type=int, default=8, help="Square patch size (pixels) used for uncertainty pooling")
     parser.add_argument("--top_k", type=int, default=15000, help="Number of highest-score patches kept for gradient back-prop")
-    parser.add_argument("--itr_per_avg", type=int, default=3, help="Number of iterations per average gaussian shown")
+    parser.add_argument("--keyframes_per_calculation", type=int, default=3, help="Number of key frames between performing uncertainty calculation")
+    parser.add_argument("--itr_per_avg", type=int, default=3, help="Number of uncertainty iterations before calculating the average gaussian")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -264,6 +266,7 @@ if __name__ == "__main__":
         uncertainty_mode=args.uncertainty_mode,
         patch_size=args.patch_size,
         top_k=args.top_k,
+        keyframes_per_calculation=args.keyframes_per_calculation,
         itr_per_avg=args.itr_per_avg,
     )
 
