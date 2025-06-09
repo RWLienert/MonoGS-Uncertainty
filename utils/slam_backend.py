@@ -593,39 +593,13 @@ class BackEnd(mp.Process):
                         # Create directories and find ground truth image for a specific key frame
                         script_dir = os.path.dirname(os.path.abspath(__file__))
                         experiments_dir = os.path.join(script_dir, "..", "experiments")
-                        gt_dir = os.path.join(script_dir, "..", "datasets/tum/rgbd_dataset_freiburg3_long_office_household/rgb")
                         os.makedirs(experiments_dir, exist_ok=True)
-
-                        if self.ordered_gt_image_files == None:
-                            image_files = sorted(os.listdir(gt_dir), key=lambda f: tuple(map(int, re.findall(r'\d+', f))))
-                            self.ordered_gt_image_files = image_files
-                        gt_filename = self.ordered_gt_image_files[cur_frame_idx]
-                        gt_src_path = os.path.join(gt_dir, gt_filename)
-                        gt_dst_path = os.path.join(experiments_dir, f"gt_{self.viewpoint_iteration}.png")
-                        shutil.copy(gt_src_path, gt_dst_path)
-
-                        # Load GT image as tensor
-                        gt_pil = Image.open(gt_src_path).convert("RGB")
-                        gt_tensor = TF.to_tensor(gt_pil).to(rendering.device)  # shape: [3, H, W]
-
-                        # Resize GT if necessary to match rendering
-                        if gt_tensor.shape != rendering.shape:
-                            gt_pil = TF.resize(gt_pil, [rendering.shape[1], rendering.shape[2]])  # H, W
-                            gt_tensor = TF.to_tensor(gt_pil).to(rendering.device)
-
-                        # Clamp rendering
-                        rendering_clamped = rendering.clamp(0, 1)
-
-                        # Compute absolute difference
-                        diff = torch.abs(gt_tensor - rendering_clamped)
 
                         # Save images
                         torchvision.utils.save_image(uncertainty.clamp(0, 1),
                             os.path.join(experiments_dir, f"uncertainty_{self.viewpoint_iteration}.png"))
-                        torchvision.utils.save_image(rendering_clamped,
+                        torchvision.utils.save_image(rendering.clamp(0, 1),
                             os.path.join(experiments_dir, f"rendering_{self.viewpoint_iteration}.png"))
-                        torchvision.utils.save_image(diff,
-                            os.path.join(experiments_dir, f"dif_{self.viewpoint_iteration}.png"))
 
                         self.viewpoint_iteration += 1
 
