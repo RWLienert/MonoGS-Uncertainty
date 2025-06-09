@@ -4,7 +4,7 @@
 
 <p align="center">
 
-  <h1 align="center"> Gaussian Splatting SLAM with Uncertainty Estimation and Guidance
+  <h1 align="center"> Gaussian Splatting SLAM
   </h1>
   <p align="center">
     <a href="https://muskie82.github.io/"><strong>*Hidenobu Matsuki</strong></a>
